@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 
 from backend.github.issues import IssueService
+from backend.github.repository import RepositoryService
 from backend.schemas import IssueRequest
 
 
@@ -12,6 +13,7 @@ app = FastAPI(
 
 
 issue_service = IssueService()
+repository_service = RepositoryService()
 
 
 @app.get("/")
@@ -41,6 +43,31 @@ async def get_github_issue(request: IssueRequest):
         return {
             "status": "success",
             "issue": issue,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
+
+@app.get("/github/file")
+async def get_github_file(
+    repo: str,
+    path: str,
+    branch: str = "main",
+):
+    try:
+        file_data = await repository_service.get_file(
+            repo=repo,
+            path=path,
+            branch=branch,
+        )
+
+        return {
+            "status": "success",
+            "file": file_data,
         }
 
     except Exception as e:
