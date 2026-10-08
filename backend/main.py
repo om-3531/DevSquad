@@ -1,10 +1,17 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+
+from backend.github.issues import IssueService
+from backend.schemas import IssueRequest
+
 
 app = FastAPI(
     title="DevSquad",
     description="AI-powered multi-agent software development system",
     version="0.1.0",
 )
+
+
+issue_service = IssueService()
 
 
 @app.get("/")
@@ -21,3 +28,23 @@ def health_check():
     return {
         "status": "healthy"
     }
+
+
+@app.post("/github/issue")
+async def get_github_issue(request: IssueRequest):
+    try:
+        issue = await issue_service.get_issue(
+            repo=request.repo,
+            issue_number=request.issue_number,
+        )
+
+        return {
+            "status": "success",
+            "issue": issue,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
