@@ -1,0 +1,1 @@
+# DevSquad GitHub integration package
