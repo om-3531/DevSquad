@@ -52,23 +52,18 @@ async def get_github_issue(request: IssueRequest):
             detail=str(e),
         )
 
-ye
-@app.get("/github/file")
-async def get_github_file(
-    repo: str,
-    path: str,
-    branch: str = "main",
-):
+
+
+@app.get("/github/repository")
+async def get_github_repository(repo: str):
     try:
-        file_data = await repository_service.get_file(
-            repo=repo,
-            path=path,
-            branch=branch,
+        repository_data = await repository_service.get_repository(
+            repo=repo
         )
 
         return {
             "status": "success",
-            "file": file_data,
+            "repository": repository_data,
         }
 
     except Exception as e:
