@@ -4,7 +4,7 @@ from fastapi import FastAPI, HTTPException
 from backend.github.issues import IssueService
 from backend.github.repository import RepositoryService
 from backend.schemas import IssueRequest
-
+from backend.agents.planner import PlannerAgent
 
 app = FastAPI(
     title="DevSquad",
@@ -15,7 +15,7 @@ app = FastAPI(
 
 issue_service = IssueService()
 repository_service = RepositoryService()
-
+planner_agent = PlannerAgent()
 
 @app.get("/")
 def root():
@@ -64,6 +64,32 @@ async def get_github_repository(repo: str):
         return {
             "status": "success",
             "repository": repository_data,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
+
+@app.post("/agents/plan")
+async def create_implementation_plan(request: IssueRequest):
+    try:
+        issue = await issue_service.get_issue(
+            repo=request.repo,
+            issue_number=request.issue_number,
+        )
+
+        plan = planner_agent.create_plan(
+            title=issue.get("title", ""),
+            description=issue.get("body") or "",
+        )
+
+        return {
+            "status": "success",
+            "issue_number": request.issue_number,
+            "issue_title": issue.get("title"),
+            "plan": plan,
         }
 
     except Exception as e:
