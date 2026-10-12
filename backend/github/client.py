@@ -12,16 +12,18 @@ class GitHubClient:
         }
 
         if settings.GITHUB_TOKEN:
-            self.headers["Authorization"] = f"Bearer {settings.GITHUB_TOKEN}"
+            self.headers["Authorization"] = (
+                f"Bearer {settings.GITHUB_TOKEN}"
+            )
 
     async def get_issue(self, repo: str, issue_number: int):
         url = f"{self.base_url}/repos/{repo}/issues/{issue_number}"
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(timeout=15.0) as client:
             response = await client.get(
                 url,
                 headers=self.headers,
             )
 
-        response.raise_for_status()
-        return response.json()
+            response.raise_for_status()
+            return response.json()

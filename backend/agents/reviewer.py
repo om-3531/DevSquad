@@ -1,4 +1,3 @@
-
 from groq import Groq
 
 from backend.config import settings
@@ -25,17 +24,28 @@ Task:
 Code to review:
 {code[:3000]}
 
-Check for important bugs, security risks, error handling,
-and edge cases.
+Check:
+- Correctness and important bugs
+- Security risks
+- Error handling and edge cases
+- Whether the proposed code actually addresses the task
 
-Return ONLY this format:
-Verdict: APPROVE or REQUEST_CHANGES
-Issues: Maximum 2 short points
-Fixes: Maximum 2 short points
+Return exactly one verdict line:
+VERDICT: APPROVE
+or
+VERDICT: REQUEST_CHANGES
 
-Keep the response under 80 words.
-Do not reproduce the full code.
-Do not execute the code.
+Then return:
+Issues: Up to 2 short points
+Fixes: Up to 2 short points
+
+Rules:
+- APPROVE only when no important issue remains.
+- Use REQUEST_CHANGES when important problems remain.
+- Do not approve code just because it looks plausible.
+- Do not execute the code.
+- Do not claim tests were run.
+- Keep the response under 100 words.
 """
 
         response = self.client.chat.completions.create(
@@ -44,9 +54,9 @@ Do not execute the code.
                 {
                     "role": "system",
                     "content": (
-                        "You are a concise code reviewer. "
-                        "Review the supplied code without executing it. "
-                        "Return a short verdict and actionable feedback."
+                        "You are a careful code reviewer. "
+                        "Return one unambiguous verdict using the "
+                        "required format. Never claim to execute code."
                     ),
                 },
                 {
@@ -54,17 +64,16 @@ Do not execute the code.
                     "content": prompt,
                 },
             ],
-            temperature=0.2,
+            temperature=0.1,
             max_tokens=500,
             reasoning_effort="low",
         )
 
-        choice = response.choices[0]
-        content = choice.message.content
+        content = response.choices[0].message.content
 
         if not content or not content.strip():
             return (
-                "Verdict: REQUEST_CHANGES\n"
+                "VERDICT: REQUEST_CHANGES\n"
                 "Issues: Reviewer returned an empty response.\n"
                 "Fixes: Retry the review."
             )

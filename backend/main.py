@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from fastapi import FastAPI, HTTPException
 
 from backend.github.issues import IssueService
@@ -78,6 +80,7 @@ async def run_agent_workflow(request: IssueRequest):
 
             if "VERDICT: REQUEST_CHANGES" in review_text:
                 quality_status = "REQUEST_CHANGES"
+
                 if attempt < max_retries:
                     proposed_code = coder_agent.improve_code(
                         task=task,
@@ -109,8 +112,8 @@ async def run_agent_workflow(request: IssueRequest):
             )
             break
 
-        # This executes a trusted, existing project test file, not
-        # AI-generated code. Passing it does not prove the proposal works.
+        # This runs a trusted, existing project test file, not the
+        # AI-generated proposal. Passing it does not prove the proposal works.
         test_execution = {
             "status": "NOT_RUN",
             "passed": False,
@@ -134,11 +137,14 @@ async def run_agent_workflow(request: IssueRequest):
             }
 
             if test_result["passed"]:
-                quality_status = "APPROVED_AND_TESTED"
+                quality_status = (
+                    "REVIEW_APPROVED_EXISTING_TESTS_PASSED"
+                )
                 next_action = (
                     "Reviewer approved the proposal and the selected "
-                    "existing project test file passed. Manual "
-                    "integration checks are still required."
+                    "existing project test file passed. The AI-generated "
+                    "proposal itself was not executed; manual integration "
+                    "checks are still required."
                 )
             else:
                 quality_status = "TESTS_FAILED"
@@ -164,7 +170,10 @@ async def run_agent_workflow(request: IssueRequest):
             "review": review,
             "quality_gate": {
                 "status": quality_status,
-                "approved": quality_status == "APPROVED_AND_TESTED",
+                "approved": (
+                    quality_status
+                    == "REVIEW_APPROVED_EXISTING_TESTS_PASSED"
+                ),
                 "next_action": next_action,
             },
             "correction_attempts": correction_attempts,
@@ -176,11 +185,13 @@ async def run_agent_workflow(request: IssueRequest):
             "next_action": next_action,
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Workflow failed: {type(e).__name__}: {e}",
-        )
+        ) from e
 
 
 @app.get("/")
@@ -205,8 +216,10 @@ async def get_github_issue(request: IssueRequest):
             issue_number=request.issue_number,
         )
         return {"status": "success", "issue": issue}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/github/repository")
@@ -214,8 +227,10 @@ async def get_github_repository(repo: str):
     try:
         repository_data = await repository_service.get_repository(repo=repo)
         return {"status": "success", "repository": repository_data}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/agents/code")
@@ -231,11 +246,13 @@ async def generate_code(request: IssueRequest):
             branch="main",
         )
         repository_context = file_data.get("decoded_content", "")
+
         task = (
             f"Issue #{request.issue_number}: "
             f"{issue.get('title', '')}\\n"
             f"{issue.get('body') or ''}"
         )
+
         plan = planner_agent.create_plan(
             title=issue.get("title", ""),
             description=issue.get("body") or "",
@@ -250,6 +267,7 @@ async def generate_code(request: IssueRequest):
             task=task,
             proposed_code=proposed_code,
         )
+
         return {
             "status": "success",
             "issue_number": request.issue_number,
@@ -258,28 +276,35 @@ async def generate_code(request: IssueRequest):
             "proposed_code": proposed_code,
             "test_suggestions": test_suggestions,
             "testing_status": "Test cases generated; not executed",
+            "repository_modified": False,
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/agents/review")
 async def review_code(request: dict):
     task = request.get("task", "").strip()
     code = request.get("code", "").strip()
+
     if not task or not code:
         raise HTTPException(
             status_code=400,
             detail="Both task and code are required.",
         )
+
     try:
         review = reviewer_agent.review_code(task=task, code=code)
         return {"status": "success", "review": review}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Review failed: {type(e).__name__}: {e}",
-        )
+        ) from e
 
 
 @app.post("/agents/test")
@@ -296,8 +321,6 @@ async def run_agent_tests(test_file: str):
             "stderr": result["stderr"],
         }
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
+        raise HTTPException(status_code=500, detail=str(e)) from e
