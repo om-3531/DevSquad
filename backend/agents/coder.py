@@ -1,5 +1,6 @@
 
 import os
+
 from dotenv import load_dotenv
 from groq import Groq
 
@@ -8,8 +9,8 @@ load_dotenv()
 
 class CoderAgent:
     def __init__(self):
-        api_key = os.getenv("LLM_API_KEY")
         self.model = os.getenv("LLM_MODEL")
+        api_key = os.getenv("LLM_API_KEY")
 
         if not api_key:
             raise ValueError("LLM_API_KEY is missing in .env")
@@ -26,9 +27,7 @@ class CoderAgent:
         existing_code: str = "",
     ) -> str:
         prompt = f"""
-You are the Coder Agent in DevSquad.
-
-Generate a proposed code change for the task.
+Generate a proposed Python code change for this task.
 
 Task:
 {task[:2000]}
@@ -40,9 +39,11 @@ Existing code:
 {existing_code[:5000] or "No existing code provided."}
 
 Rules:
-- Return the proposed code and a short explanation.
-- Do not claim tests were run.
-- Do not claim files were modified.
+- Return only the complete Python code.
+- Do not use Markdown code fences.
+- Do not include explanations outside the code.
+- Include required imports.
+- Do not claim tests were run or files were modified.
 - Do not include secrets or API keys.
 """
 
@@ -56,9 +57,9 @@ Rules:
         reviewer_feedback: str,
     ) -> str:
         prompt = f"""
-You are improving a proposed code change in DevSquad.
+Improve the proposed Python code using the reviewer feedback.
 
-Original task:
+Task:
 {task[:2000]}
 
 Implementation plan:
@@ -70,12 +71,12 @@ Previous proposed code:
 Reviewer feedback:
 {reviewer_feedback[:2000]}
 
-Instructions:
+Rules:
 - Fix the issues identified by the reviewer.
-- Return the complete improved proposed code and a short explanation.
+- Return the complete improved Python code only.
+- Do not use Markdown code fences or explanations.
 - Preserve existing functionality where possible.
-- Do not claim tests were run.
-- Do not claim files were modified.
+- Do not claim tests were run or files were modified.
 - Do not include secrets or API keys.
 """
 
@@ -88,16 +89,13 @@ Instructions:
                 {
                     "role": "system",
                     "content": (
-                        "You are a careful software engineer. "
-                        "Generate and improve code based on the task "
-                        "and reviewer feedback. Never claim to execute "
+                        "You are a careful Python software engineer. "
+                        "Return complete Python code without Markdown "
+                        "fences or explanations. Never claim to execute "
                         "code or modify repository files."
                     ),
                 },
-                {
-                    "role": "user",
-                    "content": prompt,
-                },
+                {"role": "user", "content": prompt},
             ],
             temperature=0.2,
             max_tokens=3000,

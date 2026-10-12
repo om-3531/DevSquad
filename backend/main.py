@@ -10,6 +10,7 @@ from backend.agents.coder import CoderAgent
 from backend.agents.tester import TesterAgent
 from backend.agents.test_runner import TestRunner
 from backend.agents.reviewer import ReviewerAgent
+from backend.agents.generated_test_runner import GeneratedTestRunner
 
 
 app = FastAPI(
@@ -25,7 +26,7 @@ coder_agent = CoderAgent()
 tester_agent = TesterAgent()
 test_runner = TestRunner()
 reviewer_agent = ReviewerAgent()
-
+generated_test_runner = GeneratedTestRunner()
 
 @app.post("/agents/workflow")
 async def run_agent_workflow(request: IssueRequest):
@@ -122,35 +123,22 @@ async def run_agent_workflow(request: IssueRequest):
         }
 
         if quality_status == "APPROVED":
-            test_result = test_runner.run_tests("test_runner_check.py")
-            test_execution = {
-                "status": (
-                    "TESTS_PASSED"
-                    if test_result["passed"]
-                    else "TESTS_FAILED"
-                ),
-                "passed": test_result["passed"],
-                "summary": test_result.get(
-                    "summary", "Test summary unavailable"
-                ),
-                "return_code": test_result["return_code"],
-            }
+            test_execution = generated_test_runner.run_generated_tests(
+                proposed_code=proposed_code,
+                generated_tests=test_suggestions,
+            )
 
-            if test_result["passed"]:
-                quality_status = (
-                    "REVIEW_APPROVED_EXISTING_TESTS_PASSED"
-                )
+            if test_execution["passed"]:
+                quality_status = "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
                 next_action = (
-                    "Reviewer approved the proposal and the selected "
-                    "existing project test file passed. The AI-generated "
-                    "proposal itself was not executed; manual integration "
-                    "checks are still required."
+                    "Reviewer approved the proposal and generated tests "
+                    "passed. Manual review is still required."
                 )
             else:
-                quality_status = "TESTS_FAILED"
+                quality_status = "GENERATED_TESTS_FAILED"
                 next_action = (
-                    "The selected project test file failed. Inspect "
-                    "the test output before proceeding."
+                    "Generated tests failed or validation was unsuccessful. "
+                    "Inspect the test summary before proceeding."
                 )
         elif quality_status == "REQUEST_CHANGES":
             next_action = (
@@ -159,7 +147,7 @@ async def run_agent_workflow(request: IssueRequest):
             )
         else:
             next_action = "Code was not approved. Tests were not executed."
-
+        
         return {
             "status": "success",
             "issue_number": request.issue_number,
@@ -171,8 +159,7 @@ async def run_agent_workflow(request: IssueRequest):
             "quality_gate": {
                 "status": quality_status,
                 "approved": (
-                    quality_status
-                    == "REVIEW_APPROVED_EXISTING_TESTS_PASSED"
+                    quality_status == "REVIEW_APPROVED_EXISTING_TESTS_PASSED"
                 ),
                 "next_action": next_action,
             },
@@ -181,7 +168,7 @@ async def run_agent_workflow(request: IssueRequest):
             "testing_status": test_execution["status"],
             "test_execution": test_execution,
             "repository_modified": False,
-            "quality_status": quality_status,
+          quality_status == "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
             "next_action": next_action,
         }
 

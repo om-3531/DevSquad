@@ -1,5 +1,6 @@
 
 import os
+
 from dotenv import load_dotenv
 from groq import Groq
 
@@ -8,6 +9,7 @@ load_dotenv()
 
 class TesterAgent:
     __test__ = False
+
     def __init__(self):
         api_key = os.getenv("LLM_API_KEY")
         self.model = os.getenv("LLM_MODEL")
@@ -22,16 +24,22 @@ class TesterAgent:
 
     def generate_tests(self, task: str, proposed_code: str) -> str:
         prompt = f"""
-Create three concise pytest test cases.
+Create pytest tests for the proposed Python code.
 
-Task: {task}
+Task:
+{task[:2000]}
 
-Code:
-{proposed_code}
+Proposed code:
+{proposed_code[:5000]}
 
-Include normal input, edge case, and expected output.
-Do not claim tests were executed.
-Keep the answer short.
+Rules:
+- Return Python test code only.
+- Do not use Markdown code fences.
+- Import functions from candidate.py using:
+  from candidate import function_name
+- Include normal input, edge cases, and expected output.
+- Do not claim that tests were executed.
+- Do not modify files.
 """
 
         response = self.client.chat.completions.create(
@@ -39,7 +47,10 @@ Keep the answer short.
             messages=[
                 {
                     "role": "system",
-                    "content": "You are a careful software tester.",
+                    "content": (
+                        "You are a careful software tester. "
+                        "Return only valid Python pytest code."
+                    ),
                 },
                 {
                     "role": "user",
@@ -50,15 +61,9 @@ Keep the answer short.
             max_tokens=1200,
         )
 
-        choice = response.choices[0]
-        content = choice.message.content
-
-        print("Finish reason:", choice.finish_reason)
+        content = response.choices[0].message.content
 
         if not content or not content.strip():
-            raise ValueError(
-                "Empty AI response. "
-                f"Finish reason: {choice.finish_reason}"
-            )
+            raise ValueError("Tester returned an empty response.")
 
-        return content
+        return content.strip()
