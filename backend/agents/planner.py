@@ -22,7 +22,12 @@ class PlannerAgent:
 
         self.client = Groq(api_key=api_key)
 
-    def create_plan(self, title: str, description: str):
+    def create_plan(
+    self,
+    title: str,
+    description: str,
+    repository_context: str = "",
+):
         prompt = f"""
 You are the Planner Agent in DevSquad, an AI software development team.
 
@@ -32,7 +37,8 @@ Issue title:
 {title}
 
 Issue description:
-{description or "No description provided."}
+Repository context:
+{repository_context or "No repository context provided."}
 
 Return ONLY valid JSON in this format:
 {{

@@ -97,3 +97,41 @@ async def create_implementation_plan(request: IssueRequest):
             status_code=500,
             detail=str(e),
         )
+
+@app.post("/agents/plan")
+async def create_implementation_plan(request: IssueRequest):
+    try:
+        issue = await issue_service.get_issue(
+            repo=request.repo,
+            issue_number=request.issue_number,
+        )
+
+        file_data = await repository_service.get_file(
+            repo=request.repo,
+            path="README.md",
+            branch="main",
+        )
+
+        repository_context = file_data.get(
+            "decoded_content", ""
+        )
+
+        plan = planner_agent.create_plan(
+            title=issue.get("title", ""),
+            description=issue.get("body") or "",
+            repository_context=repository_context,
+        )
+
+        return {
+            "status": "success",
+            "issue_number": request.issue_number,
+            "issue_title": issue.get("title"),
+            "context_file": "README.md",
+            "plan": plan,
+        }
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e),
+        )
