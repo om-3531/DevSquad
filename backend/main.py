@@ -1,3 +1,9 @@
+import uuid
+import httpx
+
+from backend.github.client import GitHubClient
+
+
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -27,162 +33,7 @@ tester_agent = TesterAgent()
 test_runner = TestRunner()
 reviewer_agent = ReviewerAgent()
 generated_test_runner = GeneratedTestRunner()
-
-@app.post("/agents/workflow")
-async def run_agent_workflow(request: IssueRequest):
-    try:
-        issue = await issue_service.get_issue(
-            repo=request.repo,
-            issue_number=request.issue_number,
-        )
-
-        file_data = await repository_service.get_file(
-            repo=request.repo,
-            path="README.md",
-            branch="main",
-        )
-        repository_context = file_data.get("decoded_content", "")
-        task = (
-            f"Issue #{request.issue_number}: "
-            f"{issue.get('title', '')}\\n"
-            f"{issue.get('body') or ''}"
-        )
-
-        plan = planner_agent.create_plan(
-            title=issue.get("title", ""),
-            description=issue.get("body") or "",
-            repository_context=repository_context,
-        )
-
-        proposed_code = coder_agent.generate_code(
-            task=task,
-            implementation_plan=str(plan),
-            existing_code=repository_context,
-        )
-
-        test_suggestions = tester_agent.generate_tests(
-            task=task,
-            proposed_code=proposed_code,
-        )
-
-        max_retries = 2
-        correction_attempts = 0
-        review = ""
-        quality_status = "NEEDS_MANUAL_REVIEW"
-        next_action = "Manual review required."
-
-        for attempt in range(max_retries + 1):
-            review = reviewer_agent.review_code(
-                task=task,
-                code=proposed_code,
-            )
-            review_text = review.upper()
-
-            if "VERDICT: REQUEST_CHANGES" in review_text:
-                quality_status = "REQUEST_CHANGES"
-
-                if attempt < max_retries:
-                    proposed_code = coder_agent.improve_code(
-                        task=task,
-                        implementation_plan=str(plan),
-                        previous_code=proposed_code,
-                        reviewer_feedback=review,
-                    )
-                    correction_attempts += 1
-                    test_suggestions = tester_agent.generate_tests(
-                        task=task,
-                        proposed_code=proposed_code,
-                    )
-                    continue
-
-                next_action = (
-                    "Maximum correction attempts reached. "
-                    "Manual review required."
-                )
-                break
-
-            if "VERDICT: APPROVE" in review_text:
-                quality_status = "APPROVED"
-                next_action = "Code is approved for the testing stage."
-                break
-
-            quality_status = "NEEDS_MANUAL_REVIEW"
-            next_action = (
-                "Reviewer verdict was unclear. Manual review required."
-            )
-            break
-
-        # This runs a trusted, existing project test file, not the
-        # AI-generated proposal. Passing it does not prove the proposal works.
-        test_execution = {
-            "status": "NOT_RUN",
-            "passed": False,
-            "summary": "Tests were not executed.",
-            "return_code": None,
-        }
-
-        if quality_status == "APPROVED":
-            test_execution = generated_test_runner.run_generated_tests(
-                proposed_code=proposed_code,
-                generated_tests=test_suggestions,
-            )
-
-            if test_execution["passed"]:
-                quality_status = "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
-                next_action = (
-                    "Reviewer approved the proposal and generated tests "
-                    "passed. Manual review is still required."
-                )
-            else:
-                quality_status = "GENERATED_TESTS_FAILED"
-                next_action = (
-                    "Generated tests failed or validation was unsuccessful. "
-                    "Inspect the test summary before proceeding."
-                )
-        elif quality_status == "REQUEST_CHANGES":
-            next_action = (
-                "Maximum correction attempts reached or changes "
-                "are still required. Tests were not executed."
-            )
-        else:
-            next_action = "Code was not approved. Tests were not executed."
-        
-        return {
-            "status": "success",
-            "issue_number": request.issue_number,
-            "issue_title": issue.get("title"),
-            "plan": plan,
-            "proposed_code": proposed_code,
-            "test_suggestions": test_suggestions,
-            "review": review,
-           
-
-            "quality_gate": {
-                "status": quality_status,
-                "approved": quality_status in (
-                    "REVIEW_APPROVED_EXISTING_TESTS_PASSED",
-                    "REVIEW_APPROVED_GENERATED_TESTS_PASSED",
-                ),
-                "next_action": next_action,
-            },
-
-            "correction_attempts": correction_attempts,
-            "max_correction_attempts": max_retries,
-            "testing_status": test_execution["status"],
-            "test_execution": test_execution,
-            "repository_modified": False,
-          quality_status == "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
-            "next_action": next_action,
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Workflow failed: {type(e).__name__}: {e}",
-        ) from e
-
+github_client = GitHubClient()
 
 @app.get("/")
 def root():
@@ -314,3 +165,204 @@ async def run_agent_tests(test_file: str):
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
+
+
+        
+@app.post("/agents/workflow")
+async def run_agent_workflow(request: IssueRequest):
+    try:
+        issue = await issue_service.get_issue(
+            repo=request.repo,
+            issue_number=request.issue_number,
+        )
+
+        task = (
+            f"Issue #{request.issue_number}: "
+            f"{issue.get('title', '')}\n"
+            f"{issue.get('body') or ''}"
+        )
+
+        file_data = await repository_service.get_file(
+            repo=request.repo,
+            path="README.md",
+            branch="main",
+        )
+        repository_context = file_data.get("decoded_content", "")
+
+        plan = planner_agent.create_plan(
+            title=issue.get("title", ""),
+            description=issue.get("body") or "",
+            repository_context=repository_context,
+        )
+
+        proposed_code = coder_agent.generate_code(
+            task=task,
+            implementation_plan=str(plan),
+            existing_code=repository_context,
+        )
+
+        test_suggestions = tester_agent.generate_tests(
+            task=task,
+            proposed_code=proposed_code,
+        )
+
+        max_retries = 2
+        correction_attempts = 0
+        review = ""
+        quality_status = "NEEDS_MANUAL_REVIEW"
+
+        for attempt in range(max_retries + 1):
+            review = reviewer_agent.review_code(
+                task=task,
+                code=proposed_code,
+            )
+            verdict = review.upper()
+
+            if "VERDICT: REQUEST_CHANGES" in verdict:
+                quality_status = "REQUEST_CHANGES"
+                if attempt < max_retries:
+                    proposed_code = coder_agent.improve_code(
+                        task=task,
+                        implementation_plan=str(plan),
+                        previous_code=proposed_code,
+                        reviewer_feedback=review,
+                    )
+                    correction_attempts += 1
+                    test_suggestions = tester_agent.generate_tests(
+                        task=task,
+                        proposed_code=proposed_code,
+                    )
+                    continue
+                break
+
+            if "VERDICT: APPROVE" in verdict:
+                quality_status = "APPROVED"
+            break
+
+        test_execution = {
+            "status": "NOT_RUN",
+            "passed": False,
+            "summary": "Tests were not executed.",
+            "return_code": None,
+        }
+
+        if quality_status == "APPROVED":
+            test_execution = generated_test_runner.run_generated_tests(
+                proposed_code=proposed_code,
+                generated_tests=test_suggestions,
+            )
+            quality_status = (
+                "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
+                if test_execution["passed"]
+                else "GENERATED_TESTS_FAILED"
+            )
+
+        repository_modified = False
+        pull_request = None
+        commit_result = None
+        branch_name = None
+        next_action = "Manual review required."
+
+        if quality_status == "REVIEW_APPROVED_GENERATED_TESTS_PASSED":
+            next_action = (
+                "Review and generated tests passed. "
+                "No repository changes were made."
+            )
+
+            if request.target_path:
+                target_path = request.target_path
+
+                # Only create new Python files in this initial workflow.
+                if not target_path.endswith(".py"):
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Only new .py files are supported.",
+                    )
+
+                try:
+                    await repository_service.get_file(
+                        repo=request.repo,
+                        path=target_path,
+                        branch="main",
+                    )
+                except httpx.HTTPStatusError as error:
+                    if error.response.status_code != 404:
+                        raise
+                else:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Target file already exists. "
+                            "Overwriting existing files is not supported."
+                        ),
+                    )
+
+                branch_name = (
+                    f"devsquad/issue-{request.issue_number}-"
+                    f"{uuid.uuid4().hex[:8]}"
+                )
+
+                await github_client.create_branch(
+                    repo=request.repo,
+                    branch_name=branch_name,
+                    source_branch="main",
+                )
+
+                commit_result = await github_client.commit_files(
+                    repo=request.repo,
+                    branch=branch_name,
+                    files={target_path: proposed_code},
+                    message=f"Implement issue #{request.issue_number}",
+                )
+
+                pull_request = await github_client.create_pull_request(
+                    repo=request.repo,
+                    title=f"Draft: {issue.get('title', '')}",
+                    head=branch_name,
+                    base="main",
+                    body=(
+                        f"Closes #{request.issue_number}\n\n"
+                        "Generated by DevSquad. Please review the code "
+                        "and test results before merging."
+                    ),
+                    draft=True,
+                )
+
+                repository_modified = True
+                next_action = "Draft pull request created for manual review."
+
+        return {
+            "status": "success",
+            "issue_number": request.issue_number,
+            "issue_title": issue.get("title"),
+            "plan": plan,
+            "proposed_code": proposed_code,
+            "test_suggestions": test_suggestions,
+            "review": review,
+            "quality_gate": {
+                "status": quality_status,
+                "approved": (
+                    quality_status
+                    == "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
+                ),
+                "next_action": next_action,
+            },
+            "correction_attempts": correction_attempts,
+            "max_correction_attempts": max_retries,
+            "testing_status": test_execution["status"],
+            "test_execution": test_execution,
+            "repository_modified": repository_modified,
+            "branch": branch_name,
+            "commit": commit_result,
+            "pull_request": pull_request,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Workflow failed: {type(error).__name__}: {error}",
+        ) from error
+
+
