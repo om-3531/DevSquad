@@ -45,3 +45,42 @@ def test_empty_code_is_not_run():
 
     assert result["status"] == "NOT_RUN"
     assert result["passed"] is False
+
+def test_failing_generated_tests_are_reported():
+    runner = GeneratedTestRunner()
+
+    result = runner.run_generated_tests(
+        proposed_code="def answer():\n    return 1\n",
+        generated_tests=(
+            "from candidate import answer\n\n"
+            "def test_answer():\n"
+            "    assert answer() == 2\n"
+        ),
+    )
+
+    assert result["status"] == "TESTS_FAILED"
+    assert result["passed"] is False
+    assert result["return_code"] != 0
+
+
+def test_generated_tests_timeout(monkeypatch):
+    import subprocess
+
+    runner = GeneratedTestRunner()
+
+    def fake_run(*args, **kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd="pytest",
+            timeout=10,
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = runner.run_generated_tests(
+        proposed_code="def answer():\n    return 1\n",
+        generated_tests="def test_answer():\n    assert True\n",
+    )
+
+    assert result["status"] == "TIMEOUT"
+    assert result["passed"] is False
+    assert result["return_code"] is None
