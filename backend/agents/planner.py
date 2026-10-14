@@ -15,8 +15,7 @@ class PlannerAgent:
         self.model = os.getenv("LLM_MODEL")
 
         if not api_key:
-            raise ValueError("LLM_API_KEY is missing in .env")
-
+          raise ValueError("LLM_API_KEY is missing in .env")
         if not self.model:
             raise ValueError("LLM_MODEL is missing in .env")
 
@@ -37,6 +36,8 @@ Issue title:
 {title}
 
 Issue description:
+{description or "No issue description provided."}
+
 Repository context:
 {repository_context or "No repository context provided."}
 
