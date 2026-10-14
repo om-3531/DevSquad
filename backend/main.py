@@ -42,7 +42,6 @@ async def run_agent_workflow(request: IssueRequest):
             branch="main",
         )
         repository_context = file_data.get("decoded_content", "")
-
         task = (
             f"Issue #{request.issue_number}: "
             f"{issue.get('title', '')}\\n"
@@ -156,13 +155,17 @@ async def run_agent_workflow(request: IssueRequest):
             "proposed_code": proposed_code,
             "test_suggestions": test_suggestions,
             "review": review,
+           
+
             "quality_gate": {
                 "status": quality_status,
-                "approved": (
-                    quality_status == "REVIEW_APPROVED_EXISTING_TESTS_PASSED"
+                "approved": quality_status in (
+                    "REVIEW_APPROVED_EXISTING_TESTS_PASSED",
+                    "REVIEW_APPROVED_GENERATED_TESTS_PASSED",
                 ),
                 "next_action": next_action,
             },
+
             "correction_attempts": correction_attempts,
             "max_correction_attempts": max_retries,
             "testing_status": test_execution["status"],
