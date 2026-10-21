@@ -9,9 +9,20 @@ class GeneratedTestRunner:
     """Validate generated Python and run its tests inside Docker."""
 
     IMAGE_NAME = "devsquad-test-runner"
-    TIMEOUT_SECONDS = 10
+    TIMEOUT_SECONDS = 30
     MEMORY_LIMIT = "256m"
     CPU_LIMIT = "1"
+    DOCKER_ERROR_MARKERS = (
+        "docker daemon",
+        "cannot connect to the docker",
+        "error during connect",
+        "failed to connect to the docker",
+        "dockerdesktoplinuxengine",
+        "image not found",
+        "unable to find image",
+        "pull access denied",
+        "is the docker daemon running",
+    )
 
     def run_generated_tests(
         self,
@@ -41,7 +52,6 @@ class GeneratedTestRunner:
             prefix="devsquad-tests-"
         ) as temp:
             workdir = Path(temp)
-
             (workdir / "candidate.py").write_text(
                 proposed_code,
                 encoding="utf-8",
@@ -50,6 +60,15 @@ class GeneratedTestRunner:
                 generated_tests,
                 encoding="utf-8",
             )
+
+            image_error = self._ensure_image()
+            if image_error:
+                return {
+                    "status": "DOCKER_ERROR",
+                    "passed": False,
+                    "summary": image_error[-2000:],
+                    "return_code": None,
+                }
 
             command = [
                 "docker",
@@ -64,7 +83,11 @@ class GeneratedTestRunner:
                 "--cap-drop", "ALL",
                 "--security-opt", "no-new-privileges",
                 "--mount",
-                f"type=bind,source={workdir},target=/workspace,readonly",
+                (
+                    "type=bind,source="
+                    f"{self._bind_source(workdir)},"
+                    "target=/workspace,readonly"
+                ),
                 "--workdir", "/workspace",
                 "--env", "PYTHONDONTWRITEBYTECODE=1",
                 self.IMAGE_NAME,
@@ -108,13 +131,7 @@ class GeneratedTestRunner:
 
         output = (result.stdout + "\n" + result.stderr).strip()
 
-        if result.returncode != 0 and (
-            "docker daemon" in output.lower()
-            or "cannot connect to the docker" in output.lower()
-            or "error during connect" in output.lower()
-            or "image not found" in output.lower()
-            or "pull access denied" in output.lower()
-        ):
+        if self._is_docker_infra_error(output):
             return {
                 "status": "DOCKER_ERROR",
                 "passed": False,
@@ -130,3 +147,61 @@ class GeneratedTestRunner:
             "summary": output[-2000:] or "No test output was produced.",
             "return_code": result.returncode,
         }
+
+    def _bind_source(self, path: Path) -> str:
+        return str(path.resolve()).replace("\\", "/")
+
+    def _is_docker_infra_error(self, output: str) -> bool:
+        text = output.lower()
+        return any(marker in text for marker in self.DOCKER_ERROR_MARKERS)
+
+    def _ensure_image(self) -> str | None:
+        try:
+            inspect = subprocess.run(
+                ["docker", "image", "inspect", self.IMAGE_NAME],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except FileNotFoundError:
+            return (
+                "Docker CLI was not found. "
+                "Install Docker Desktop and ensure it is running."
+            )
+        except subprocess.TimeoutExpired:
+            return "Docker image inspection timed out."
+
+        if inspect.returncode == 0:
+            return None
+
+        inspect_output = (inspect.stdout + "\n" + inspect.stderr).strip()
+        if self._is_docker_infra_error(inspect_output):
+            return inspect_output[-2000:] or "Docker is not available."
+
+        root = Path(__file__).resolve().parents[2]
+        dockerfile = root / "Dockerfile.test"
+        try:
+            build = subprocess.run(
+                [
+                    "docker",
+                    "build",
+                    "-t",
+                    self.IMAGE_NAME,
+                    "-f",
+                    str(dockerfile),
+                    str(root),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=180,
+                check=False,
+            )
+        except subprocess.TimeoutExpired:
+            return "Docker image build timed out."
+
+        if build.returncode != 0:
+            output = (build.stdout + "\n" + build.stderr).strip()
+            return output[-2000:] or "Docker image build failed."
+
+        return None

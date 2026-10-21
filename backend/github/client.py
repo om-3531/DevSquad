@@ -148,7 +148,7 @@ class GitHubClient:
         head: str,
         base: str = "main",
         body: str = "",
-        draft: bool = False,
+        draft: bool = True,
     ):
         if not title.strip():
             raise ValueError("Pull request title cannot be empty.")
@@ -164,7 +164,7 @@ class GitHubClient:
                     "head": head,
                     "base": base,
                     "body": body,
-                    "draft": draft,
+                    "draft": True,
                 },
             )
             response.raise_for_status()

@@ -56,3 +56,23 @@ def test_create_plan_handles_invalid_json():
         "The AI returned a response that was not valid JSON."
     )
     assert result["raw_response"] == "not valid JSON"
+
+
+def test_create_plan_parses_markdown_json():
+    planner = make_planner()
+
+    expected_plan = {
+        "problem_summary": "Fix login",
+        "steps": ["Add validation"],
+        "testing_strategy": "Run tests",
+        "risks": [],
+    }
+    response = MagicMock()
+    response.choices[0].message.content = (
+        "```json\n" + json.dumps(expected_plan) + "\n```"
+    )
+    planner.client.chat.completions.create.return_value = response
+
+    result = planner.create_plan(title="Fix login", description="details")
+
+    assert result == expected_plan

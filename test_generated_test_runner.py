@@ -35,6 +35,35 @@ def test_invalid_python_is_rejected():
     assert result["passed"] is False
 
 
+def test_docker_connectivity_error_is_not_a_test_failure(monkeypatch):
+    import subprocess
+
+    runner = GeneratedTestRunner()
+
+    def fake_run(command, *args, **kwargs):
+        completed = subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr=(
+                "failed to connect to the docker API at "
+                "npipe:////./pipe/dockerDesktopLinuxEngine"
+            ),
+        )
+        return completed
+
+    monkeypatch.setattr(runner, "_ensure_image", lambda: None)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = runner.run_generated_tests(
+        proposed_code="def answer():\n    return 1\n",
+        generated_tests="def test_answer():\n    assert True\n",
+    )
+
+    assert result["status"] == "DOCKER_ERROR"
+    assert result["passed"] is False
+
+
 def test_empty_code_is_not_run():
     runner = GeneratedTestRunner()
 
@@ -74,6 +103,7 @@ def test_generated_tests_timeout(monkeypatch):
             timeout=10,
         )
 
+    monkeypatch.setattr(runner, "_ensure_image", lambda: None)
     monkeypatch.setattr(subprocess, "run", fake_run)
 
     result = runner.run_generated_tests(

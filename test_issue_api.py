@@ -1,6 +1,7 @@
 
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 
 from backend.main import app
@@ -49,6 +50,28 @@ def test_github_issue_success():
     assert data["status"] == "success"
     assert data["issue"]["title"] == "Sample issue"
     assert data["issue"]["state"] == "open"
+
+
+def test_github_issue_not_found():
+    with patch(
+        "backend.main.issue_service.get_issue",
+        new_callable=AsyncMock,
+        side_effect=httpx.HTTPStatusError(
+            "Not found",
+            request=httpx.Request("GET", "https://api.github.com/test"),
+            response=httpx.Response(
+                404,
+                request=httpx.Request("GET", "https://api.github.com/test"),
+            ),
+        ),
+    ):
+        response = client.post(
+            "/github/issue",
+            json={"repo": "om-3531/DevSquad", "issue_number": 999999},
+        )
+
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"].lower()
 
 
 def test_github_issue_missing_repo():

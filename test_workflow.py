@@ -46,6 +46,11 @@ def setup_workflow_mocks(review, test_result):
             return_value=issue,
         ),
         patch(
+            "backend.main.repository_service.get_repository",
+            new_callable=AsyncMock,
+            return_value={"default_branch": "main"},
+        ),
+        patch(
             "backend.main.repository_service.get_file",
             new_callable=AsyncMock,
             return_value={"decoded_content": "# Sample repository"},
@@ -113,6 +118,10 @@ def test_workflow_generated_tests_fail():
 
     try:
         with (
+            patch(
+                "backend.main.coder_agent.improve_code",
+                return_value=CODE,
+            ) as improve,
             patch("backend.main.github_client.create_branch") as branch,
             patch("backend.main.github_client.commit_files") as commit,
             patch("backend.main.github_client.create_pull_request") as pr,
@@ -131,6 +140,8 @@ def test_workflow_generated_tests_fail():
     assert response.status_code == 200
     assert response.json()["quality_gate"]["status"] == "GENERATED_TESTS_FAILED"
     assert response.json()["repository_modified"] is False
+    assert response.json()["correction_attempts"] == 2
+    improve.assert_called()
     branch.assert_not_called()
     commit.assert_not_called()
     pr.assert_not_called()
@@ -231,6 +242,7 @@ def test_workflow_creates_draft_pr_for_new_file():
     commit.assert_awaited_once()
     pr.assert_awaited_once()
     assert pr.await_args.kwargs["draft"] is True
+    assert "merge" not in pr.await_args.kwargs
 
 
 def test_workflow_rejects_existing_target_file():

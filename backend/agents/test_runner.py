@@ -1,10 +1,13 @@
 
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 
 class TestRunner:
+    __test__ = False
+
     def run_tests(self, test_file: str) -> dict:
         project_root = Path(__file__).resolve().parents[2]
         test_path = (project_root / test_file).resolve()
@@ -23,6 +26,7 @@ class TestRunner:
                     "pytest",
                     str(test_path),
                     "-v",
+                    "--tb=short",
                 ],
                 cwd=project_root,
                 capture_output=True,
@@ -30,9 +34,24 @@ class TestRunner:
                 timeout=30,
             )
 
+            output = result.stdout + "\n" + result.stderr
+            summary_match = re.search(
+                r"(?:\d+ passed)?"
+                r"(?:,\s*)?(?:\d+ failed)?"
+                r"(?:,\s*)?(?:\d+ skipped)?"
+                r"(?:,\s*)?(?:\d+ error(?:s)?)?"
+                r"\s+in\s+[\d.]+s",
+                output,
+            )
+
             return {
                 "passed": result.returncode == 0,
                 "return_code": result.returncode,
+                "summary": (
+                    summary_match.group(0).strip()
+                    if summary_match
+                    else "Test summary unavailable"
+                ),
                 "stdout": result.stdout,
                 "stderr": result.stderr,
             }
@@ -41,6 +60,7 @@ class TestRunner:
             return {
                 "passed": False,
                 "return_code": None,
+                "summary": "Test execution timed out",
                 "stdout": "",
                 "stderr": "Tests timed out after 30 seconds.",
             }

@@ -63,6 +63,7 @@ async def test_create_pull_request(monkeypatch):
         assert url.endswith("/pulls")
         assert kwargs["json"]["head"] == "devsquad/test-branch"
         assert kwargs["json"]["base"] == "main"
+        assert kwargs["json"]["draft"] is True
 
         request = httpx.Request("POST", url)
         return httpx.Response(

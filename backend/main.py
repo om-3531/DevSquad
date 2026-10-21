@@ -3,10 +3,8 @@ import httpx
 
 from backend.github.client import GitHubClient
 
-
-from pathlib import Path
-
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from backend.github.issues import IssueService
 from backend.github.repository import RepositoryService
@@ -25,6 +23,18 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# CORS middleware yahan add karo, FastAPI ke neeche
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 issue_service = IssueService()
 repository_service = RepositoryService()
 planner_agent = PlannerAgent()
@@ -34,6 +44,22 @@ test_runner = TestRunner()
 reviewer_agent = ReviewerAgent()
 generated_test_runner = GeneratedTestRunner()
 github_client = GitHubClient()
+
+
+def github_http_error(error: httpx.HTTPStatusError) -> HTTPException:
+    status = error.response.status_code
+    messages = {
+        401: "GitHub authentication failed.",
+        403: "GitHub permission denied.",
+        404: "GitHub repository, issue, or file not found.",
+        409: "GitHub reported a conflict.",
+        422: "GitHub rejected the request.",
+    }
+    return HTTPException(
+        status_code=status,
+        detail=messages.get(status, "GitHub request failed."),
+    )
+
 
 @app.get("/")
 def root():
@@ -59,6 +85,8 @@ async def get_github_issue(request: IssueRequest):
         return {"status": "success", "issue": issue}
     except HTTPException:
         raise
+    except httpx.HTTPStatusError as error:
+        raise github_http_error(error) from error
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -70,6 +98,8 @@ async def get_github_repository(repo: str):
         return {"status": "success", "repository": repository_data}
     except HTTPException:
         raise
+    except httpx.HTTPStatusError as error:
+        raise github_http_error(error) from error
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) from e
 
@@ -182,12 +212,22 @@ async def run_agent_workflow(request: IssueRequest):
             f"{issue.get('body') or ''}"
         )
 
-        file_data = await repository_service.get_file(
+        repository_data = await repository_service.get_repository(
             repo=request.repo,
-            path="README.md",
-            branch="main",
         )
-        repository_context = file_data.get("decoded_content", "")
+        source_branch = repository_data.get("default_branch") or "main"
+
+        try:
+            file_data = await repository_service.get_file(
+                repo=request.repo,
+                path="README.md",
+                branch=source_branch,
+            )
+            repository_context = file_data.get("decoded_content", "")
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code != 404:
+                raise
+            repository_context = ""
 
         plan = planner_agent.create_plan(
             title=issue.get("title", ""),
@@ -210,6 +250,12 @@ async def run_agent_workflow(request: IssueRequest):
         correction_attempts = 0
         review = ""
         quality_status = "NEEDS_MANUAL_REVIEW"
+        test_execution = {
+            "status": "NOT_RUN",
+            "passed": False,
+            "summary": "Tests were not executed.",
+            "return_code": None,
+        }
 
         for attempt in range(max_retries + 1):
             review = reviewer_agent.review_code(
@@ -235,27 +281,37 @@ async def run_agent_workflow(request: IssueRequest):
                     continue
                 break
 
-            if "VERDICT: APPROVE" in verdict:
-                quality_status = "APPROVED"
-            break
+            if "VERDICT: APPROVE" not in verdict:
+                quality_status = "NEEDS_MANUAL_REVIEW"
+                break
 
-        test_execution = {
-            "status": "NOT_RUN",
-            "passed": False,
-            "summary": "Tests were not executed.",
-            "return_code": None,
-        }
-
-        if quality_status == "APPROVED":
             test_execution = generated_test_runner.run_generated_tests(
                 proposed_code=proposed_code,
                 generated_tests=test_suggestions,
             )
-            quality_status = (
-                "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
-                if test_execution["passed"]
-                else "GENERATED_TESTS_FAILED"
-            )
+            if test_execution["passed"]:
+                quality_status = "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
+                break
+
+            quality_status = "GENERATED_TESTS_FAILED"
+            if attempt < max_retries:
+                proposed_code = coder_agent.improve_code(
+                    task=task,
+                    implementation_plan=str(plan),
+                    previous_code=proposed_code,
+                    reviewer_feedback=(
+                        "Generated tests failed. Fix the proposed code "
+                        "so the isolated pytest suite passes.\n"
+                        f"{test_execution.get('summary', '')}"
+                    ),
+                )
+                correction_attempts += 1
+                test_suggestions = tester_agent.generate_tests(
+                    task=task,
+                    proposed_code=proposed_code,
+                )
+                continue
+            break
 
         repository_modified = False
         pull_request = None
@@ -283,7 +339,7 @@ async def run_agent_workflow(request: IssueRequest):
                     await repository_service.get_file(
                         repo=request.repo,
                         path=target_path,
-                        branch="main",
+                        branch=source_branch,
                     )
                 except httpx.HTTPStatusError as error:
                     if error.response.status_code != 404:
@@ -305,7 +361,7 @@ async def run_agent_workflow(request: IssueRequest):
                 await github_client.create_branch(
                     repo=request.repo,
                     branch_name=branch_name,
-                    source_branch="main",
+                    source_branch=source_branch,
                 )
 
                 commit_result = await github_client.commit_files(
@@ -319,11 +375,13 @@ async def run_agent_workflow(request: IssueRequest):
                     repo=request.repo,
                     title=f"Draft: {issue.get('title', '')}",
                     head=branch_name,
-                    base="main",
+                    base=source_branch,
                     body=(
                         f"Closes #{request.issue_number}\n\n"
                         "Generated by DevSquad. Please review the code "
-                        "and test results before merging."
+                        "and test results before merging. "
+                        "This pull request is a draft and is never merged "
+                        "automatically."
                     ),
                     draft=True,
                 )
@@ -359,6 +417,8 @@ async def run_agent_workflow(request: IssueRequest):
 
     except HTTPException:
         raise
+    except httpx.HTTPStatusError as error:
+        raise github_http_error(error) from error
     except Exception as error:
         raise HTTPException(
             status_code=500,

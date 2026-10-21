@@ -4,6 +4,8 @@ import os
 from dotenv import load_dotenv
 from groq import Groq
 
+from backend.agents.llm_text import strip_code_fences
+
 load_dotenv()
 
 
@@ -30,13 +32,13 @@ class CoderAgent:
 Generate a proposed Python code change for this task.
 
 Task:
-{task[:2000]}
+{task[:1200]}
 
 Implementation plan:
-{implementation_plan[:2000]}
+{implementation_plan[:1000]}
 
 Existing code:
-{existing_code[:5000] or "No existing code provided."}
+{existing_code[:3000] or "No existing code provided."}
 
 Rules:
 - Return only the complete Python code.
@@ -60,16 +62,16 @@ Rules:
 Improve the proposed Python code using the reviewer feedback.
 
 Task:
-{task[:2000]}
+{task[:1200]}
 
 Implementation plan:
-{implementation_plan[:2000]}
+{implementation_plan[:1000]}
 
 Previous proposed code:
-{previous_code[:5000]}
+{previous_code[:3500]}
 
 Reviewer feedback:
-{reviewer_feedback[:2000]}
+{reviewer_feedback[:1000]}
 
 Rules:
 - Fix the issues identified by the reviewer.
@@ -97,15 +99,22 @@ Rules:
                 },
                 {"role": "user", "content": prompt},
             ],
-            temperature=0.2,
-            max_tokens=3000,
+            temperature=0.1,
+            max_tokens=2500,
         )
 
-        content = response.choices[0].message.content
+        choice = response.choices[0]
+        content = strip_code_fences(choice.message.content or "")
+        finish_reason = getattr(choice, "finish_reason", None)
 
-        if not content or not content.strip():
+        if not content:
             raise ValueError(
                 "Coder returned an empty response. Please retry."
             )
 
-        return content.strip()
+        if finish_reason == "length":
+            raise ValueError(
+                "Coder output was truncated. Please retry with a smaller task."
+            )
+
+        return content

@@ -6,3 +6,4 @@ pydantic
 langgraph
 groq
 pytest
+pytest-asyncio

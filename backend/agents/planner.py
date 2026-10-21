@@ -1,10 +1,11 @@
 
-import os
 import json
+import os
 
 from dotenv import load_dotenv
 from groq import Groq
 
+from backend.agents.llm_text import strip_code_fences
 
 load_dotenv()
 
@@ -15,47 +16,34 @@ class PlannerAgent:
         self.model = os.getenv("LLM_MODEL")
 
         if not api_key:
-          raise ValueError("LLM_API_KEY is missing in .env")
+            raise ValueError("LLM_API_KEY is missing in .env")
         if not self.model:
             raise ValueError("LLM_MODEL is missing in .env")
 
         self.client = Groq(api_key=api_key)
 
     def create_plan(
-    self,
-    title: str,
-    description: str,
-    repository_context: str = "",
-):
+        self,
+        title: str,
+        description: str,
+        repository_context: str = "",
+    ):
         prompt = f"""
-You are the Planner Agent in DevSquad, an AI software development team.
+Create a concise implementation plan for this GitHub issue.
 
-Analyze this GitHub issue and create a practical implementation plan.
+Title: {title[:200]}
+Description: {(description or "No description")[:1200]}
+Repository context: {(repository_context or "Not provided")[:1500]}
 
-Issue title:
-{title}
-
-Issue description:
-{description or "No issue description provided."}
-
-Repository context:
-{repository_context or "No repository context provided."}
-
-Return ONLY valid JSON in this format:
+Return ONLY JSON:
 {{
-  "problem_summary": "Short explanation of the problem",
-  "steps": [
-    "First implementation step",
-    "Second implementation step",
-    "Third implementation step"
-  ],
-  "testing_strategy": "How to test the changes",
-  "risks": [
-    "Possible risk"
-  ]
+  "problem_summary": "One short sentence",
+  "steps": ["Step 1", "Step 2", "Step 3"],
+  "testing_strategy": "One short sentence",
+  "risks": ["One key risk"]
 }}
 
-Do not claim that you have modified or tested any code.
+Do not claim code was changed or tested.
 """
 
         response = self.client.chat.completions.create(
@@ -63,22 +51,20 @@ Do not claim that you have modified or tested any code.
             messages=[
                 {
                     "role": "system",
-                    "content": "You create clear and safe software implementation plans."
+                    "content": "Return concise, valid JSON only.",
                 },
-                {
-                    "role": "user",
-                    "content": prompt
-                }
+                {"role": "user", "content": prompt},
             ],
-            temperature=0.2,
+            temperature=0.1,
+            max_tokens=500,
         )
 
-        content = response.choices[0].message.content
+        content = strip_code_fences(response.choices[0].message.content or "")
 
         try:
             return json.loads(content)
         except (json.JSONDecodeError, TypeError):
             return {
                 "problem_summary": "The AI returned a response that was not valid JSON.",
-                "raw_response": content,
+                "raw_response": content[:1000],
             }
