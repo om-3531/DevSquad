@@ -65,28 +65,38 @@ class ReviewerAgent:
 
     def _build_prompt(self, task: str, code: str) -> str:
         return f"""
-Review this proposed Python code.
+You are reviewing proposed Python code for a software development workflow.
 
 Task:
-{task[:700]}
+{task[:1000]}
 
-Code:
-{code[:2200]}
+Complete proposed code:
+{code[:6000]}
 
-Check correctness, security, error handling, and task requirements.
+Review instructions:
+- Review only the code actually shown above.
+- Never report that a method, function, import, or error handler is missing
+  if it is present in the supplied code.
+- Verify every reported issue against the actual code before reporting it.
+- Distinguish confirmed bugs from optional improvements.
+- Check correctness, security, error handling, and task requirements.
+- Do not invent requirements or demand unrelated changes.
+- If you cannot identify a concrete important defect, approve the code.
+- Do not claim tests were executed.
 
-Return exactly:
+Return exactly ONE of these formats.
+
+If there are no concrete, important defects:
 VERDICT: APPROVE
-or
+Issues: None
+Fixes: None
+
+If concrete, important defects exist:
 VERDICT: REQUEST_CHANGES
+Issues: [List up to 2 specific, verified defects]
+Fixes: [Give a concrete fix for each defect]
 
-Then:
-Issues: Up to 2 short points
-Fixes: Up to 2 short points
-
-Approve only if no important issue remains.
-Do not claim tests were executed.
-Keep feedback concise and complete.
+Never include both verdicts in the same response.
 """
 
     def _has_verdict(self, content: str) -> bool:

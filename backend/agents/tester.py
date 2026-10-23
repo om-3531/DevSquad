@@ -116,39 +116,47 @@ class TesterAgent:
             "Tester could not generate valid isolated tests after "
             f"3 attempts. {last_error}"
         )
-
     def _build_prompt(self, task: str, proposed_code: str) -> str:
         return f"""
-Generate a complete pytest file for the proposed Python code.
+Generate a complete, reliable pytest file for the proposed Python code.
 
 Task:
 {task[:1200]}
 
 Proposed code:
-{proposed_code[:3000]}
+{proposed_code[:4000]}
 
 Execution environment:
-- proposed code is saved as candidate.py
-- tests are saved as test_candidate.py
-- only candidate.py and test_candidate.py are available
-- pytest is installed
-- no network access is available
-- the full project and backend package are NOT available
+- Implementation is saved as candidate.py.
+- Tests are saved as test_candidate.py.
+- Only candidate.py and test_candidate.py are available.
+- pytest and the Python standard library are installed.
+- Network access is disabled.
+- The full project and backend package are unavailable.
 
-Strict rules:
+Strict requirements:
 - Return valid Python pytest code only, without Markdown fences.
-- Import functions or classes ONLY from candidate.py.
-- Never import backend.main, backend.*, app, or other project modules.
-- Never call real APIs, access the network, or read environment secrets.
-- Do not use responses, requests-mock, or external mocking packages.
-- Mock dependencies with unittest.mock when needed.
-- Test the proposed code's actual public functions and classes.
-- Include 2 to 4 complete tests covering normal inputs and one edge case.
-- Every function must be fully closed. Never leave truncated code.
-- If the code has no testable public behavior, write one complete
-  test that checks its documented behavior without inventing APIs.
+- Import code under test ONLY from candidate.py.
+- Never import backend, backend.main, app, or other project modules.
+- Never make real network requests or call external APIs.
+- Never access environment variables, credentials, or secrets.
+- Use unittest.mock to mock network calls and external dependencies.
+- Tests must be deterministic and run without internet or credentials.
+- Do not assume undocumented functions, classes, arguments, or behavior.
+- Test only functions and classes that actually exist in candidate.py.
+- Check normal behavior, error handling, and edge cases when applicable.
+- For HTTPError tests, construct a realistic response body using io.BytesIO
+  if the implementation reads the error body.
+- Assert only behavior supported by the implementation or task requirements.
+- Do not modify candidate.py from the tests.
 - Do not claim tests were executed.
+- Ensure every import, mock, function, and parenthesis is complete.
+- Keep tests concise to avoid token-limit truncation.
+
+If the code has no testable public behavior, create one complete test
+for behavior explicitly documented in the code. Do not invent APIs.
 """
+
 
     def _forbidden_imports(self, tree: ast.AST) -> list[str]:
         forbidden = []
