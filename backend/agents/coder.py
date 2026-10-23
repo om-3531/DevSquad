@@ -62,33 +62,38 @@ Rules:
         previous_code: str,
         reviewer_feedback: str,
     ) -> str:
-        prompt = f"""
-Improve the proposed Python code using the reviewer feedback.
+     prompt = f"""
+You are implementing a real GitHub issue in a Python project.
 
-Task:
-{task[:1200]}
+GITHUB ISSUE / TASK:
+{task[:2000]}
 
-Implementation plan:
-{implementation_plan[:1000]}
+IMPLEMENTATION PLAN:
+{implementation_plan[:1500]}
 
-Previous proposed code:
-{previous_code[:3500]}
+RELEVANT EXISTING CODE:
+{existing_code[:4000] or "No existing code provided."}
 
-Reviewer feedback:
-{reviewer_feedback[:1000]}
+STRICT REQUIREMENTS:
+1. Read the task carefully and implement exactly what it requests.
+2. Do not invent unrelated features or build a different application.
+3. Follow the implementation plan when it matches the task.
+4. If existing code is provided, preserve its relevant functionality.
+5. Return complete, executable Python code.
+6. Include required imports and appropriate error handling.
+7. Do not import backend or other project-specific modules.
+8. Do not include tests in the production code.
+9. Do not return multiple files or file-path headings.
+10. Do not use Markdown fences or explanations.
+11. Never claim that code was executed or files were modified.
+12. Never include secrets or API keys.
 
-Rules:
-- Fix the identified issues.
-- Return complete, executable Python code only.
-- Keep the output self-contained and focused on the task.
-- Do not import backend, backend.main, or other project-specific modules.
-- Do not generate multiple files or file-path headings.
-- Preserve existing functionality where possible.
-- Do not use Markdown code fences or explanations.
-- Do not claim tests were run or files were modified.
-- Do not include secrets or API keys.
+Before responding, verify internally that the code directly addresses
+the task and that every requested requirement is implemented.
+
+Return Python code only.
 """
-        return self._generate(prompt)
+     return self._generate(prompt)
 
     def _generate(self, prompt: str) -> str:
         response = self.client.chat.completions.create(
@@ -96,7 +101,7 @@ Rules:
             messages=[
                 {
                     "role": "system",
-                    "content": (
+                        "content": (
                         "You are a careful Python software engineer. "
                         "Return complete Python code without Markdown "
                         "fences or explanations. Never claim to execute "
@@ -106,7 +111,7 @@ Rules:
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=6000,
+            max_tokens=8000,
         )
 
         choice = response.choices[0]

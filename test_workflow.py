@@ -274,3 +274,43 @@ def test_workflow_rejects_existing_target_file():
 
     assert response.status_code == 409
     branch.assert_not_called()
+
+def test_workflow_invalid_verdict_does_not_create_pr():
+    patches = setup_workflow_mocks("Review inconclusive", PASSED)
+    activate_patches(patches)
+
+    try:
+        with (
+            patch(
+                "backend.main.github_client.create_branch",
+                new_callable=AsyncMock,
+            ) as branch,
+            patch(
+                "backend.main.github_client.commit_files",
+                new_callable=AsyncMock,
+            ) as commit,
+            patch(
+                "backend.main.github_client.create_pull_request",
+                new_callable=AsyncMock,
+            ) as pr,
+        ):
+            response = client.post(
+                "/agents/workflow",
+                json={
+                    "repo": REPO,
+                    "issue_number": 1,
+                    "target_path": "src/check_even_odd.py",
+                },
+            )
+    finally:
+        stop_patches(patches)
+
+    assert response.status_code == 200
+    assert (
+        response.json()["quality_gate"]["status"]
+        == "NEEDS_MANUAL_REVIEW"
+    )
+    assert response.json()["repository_modified"] is False
+    branch.assert_not_called()
+    commit.assert_not_called()
+    pr.assert_not_called()

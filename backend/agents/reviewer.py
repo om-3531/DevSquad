@@ -74,18 +74,17 @@ Complete proposed code:
 {code[:6000]}
 
 Review instructions:
-- Review only the code actually shown above.
-- Never report that a method, function, import, or error handler is missing
-  if it is present in the supplied code.
-- Verify every reported issue against the actual code before reporting it.
-- Distinguish confirmed bugs from optional improvements.
-- Check correctness, security, error handling, and task requirements.
-- Do not invent requirements or demand unrelated changes.
-- If you cannot identify a concrete important defect, approve the code.
+- Verify that the code directly satisfies the given task.
+- Check every requirement in the task against the actual code.
+- Reject code that implements unrelated functionality.
+- Reject code with missing required functions or behavior.
+- Check syntax, logic, edge cases, security, and error handling.
+- Identify concrete bugs; do not invent issues.
+- Do not approve code merely because it looks well-written.
 - Do not claim tests were executed.
+- If the task is ambiguous, identify the specific ambiguity.
 
-Return exactly ONE of these formats.
-
+Return REQUEST_CHANGES if any important requirement is missing.
 If there are no concrete, important defects:
 VERDICT: APPROVE
 Issues: None

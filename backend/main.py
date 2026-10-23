@@ -120,7 +120,7 @@ async def generate_code(request: IssueRequest):
 
         task = (
             f"Issue #{request.issue_number}: "
-            f"{issue.get('title', '')}\\n"
+            f"{issue.get('title', '')}\n"
             f"{issue.get('body') or ''}"
         )
 

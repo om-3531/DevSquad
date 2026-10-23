@@ -1,236 +1,253 @@
 # DevSquad — AI-Powered Software Development Team
 
-DevSquad is an Agentic AI-based software development system that uses multiple AI agents to assist developers in solving GitHub issues.
+DevSquad is an AI-powered, multi-agent software development system that helps developers solve GitHub issues through an organized workflow.
 
-Instead of asking one AI to perform the complete software development task, DevSquad divides the work among specialized AI agents such as Planner, Coder, Tester, and Reviewer.
+It uses specialized AI agents to plan tasks, generate code, create tests, review implementations, and prepare draft pull requests for human review.
 
-The main goal is to make software development more structured, automated, and reliable.
+## ðŸš€ Key Features
 
----
+- **Planner Agent:** Analyzes GitHub issues and creates an implementation plan.
+- **Coder Agent:** Generates Python code based on the task and implementation plan.
+- **Tester Agent:** Generates tests for the proposed implementation.
+- **Reviewer Agent:** Reviews code for correctness, task relevance, security, and quality.
+- **Automated Test Execution:** Runs generated tests in an isolated test environment.
+- **Retry Workflow:** Allows code improvements when review or test execution fails.
+- **GitHub Integration:** Retrieves issues and repository information.
+- **Draft Pull Requests:** Creates a branch, commits generated code, and opens a draft PR after the workflow passes its quality checks.
+- **Human Oversight:** Generated changes remain subject to human review before merging.
 
-## 🚀 Project Workflow
+## ðŸ› ï¸ Tech Stack
 
-```text
-GitHub Issue
-     ↓
-Planner Agent
-     ↓
-Coder Agent
-     ↓
-Tester Agent
-     ↓
-Reviewer Agent
-     ↓
-Human Approval
-     ↓
-Pull Request
-
-If the tests fail, the workflow can return to the Coder Agent for improvement.
-Coder
-  ↓
-Tester
-  ↓
-Tests Failed
-  ↓
-Coder
-  ↓
-Tester
-
-🤖 AI Agents
-Agent	Responsibility
-Planner Agent	Understands the GitHub issue and creates an implementation plan
-Coder Agent	Generates or modifies code based on the plan
-Tester Agent	Runs tests and checks whether the implementation works
-Reviewer Agent	Reviews code quality, security, and correctness
-Human	Approves the final changes before creating a Pull Request
-
-
-🧠 Why Multi-Agent AI?
-A single AI agent may try to solve planning, coding, testing, and reviewing at the same time.
-DevSquad separates these responsibilities into different agents.
-This provides:
-- Better task organization
-- Separation of responsibilities
-- Automated testing
-- Code review
-- Error feedback loops
-- Human approval before final changes
-🏗️ Architecture
-The current architecture is:
-                    GitHub
-                       │
-                       ▼
-                GitHub Issue
-                       │
-                       ▼
-                FastAPI Backend
-                       │
-                       ▼
-                LangGraph Workflow
-                       │
-        ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
-     Planner         Coder          Tester
-        │              │              │
-        └──────────────┴──────────────┘
-                       │
-                       ▼
-                    Reviewer
-                       │
-                       ▼
-                Human Approval
-                       │
-                       ▼
-                 Pull Request
-
-🛠️ Tech Stack
-Backend
+### Backend
 - Python
 - FastAPI
 - Pydantic
 - HTTPX
-AI / Agent Framework
+- Uvicorn
+
+### AI and Agent Workflow
 - LangGraph
+- Groq
 - Large Language Models
 - Prompt Engineering
-Development Tools
-- Git
-- GitHub
-- pytest
-- Docker
-Frontend
-Planned:
+
+### Frontend
 - React
 - JavaScript
-- HTML
-- CSS
-📂 Project Structure
+- Vite
+
+### Testing and Development
+- pytest
+- pytest-asyncio
+- Git and GitHub
+- Docker
+
+## ðŸ—ï¸ Architecture
+
+```text
+                    GitHub
+                       |
+                       v
+                 GitHub Issue
+                       |
+                       v
+                FastAPI Backend
+                       |
+                       v
+                 Agent Workflow
+                       |
+          +------------+------------+
+          |            |            |
+          v            v            v
+       Planner       Coder        Tester
+          |            |            |
+          +------------+------------+
+                       |
+                       v
+                    Reviewer
+                       |
+                       v
+                Generated Tests
+                       |
+             +---------+---------+
+             |                   |
+             v                   v
+         Tests Pass          Tests Fail
+             |                   |
+             v                   v
+        Quality Gate       Retry / Review
+             |
+             v
+       Create Git Branch
+             |
+             v
+        Commit Changes
+             |
+             v
+       Draft Pull Request
+             |
+             v
+       Human Review
+```
+
+The workflow only creates a draft pull request when the configured review and generated-test checks pass and a valid target path is provided. Failed checks do not automatically authorize repository changes.
+
+## ðŸ“ Project Structure
+
+```text
 DevSquad/
-│
-├── backend/
-│   ├── __init__.py
-│   ├── config.py
-│   ├── main.py
-│   ├── schemas.py
-│   │
-│   └── github/
-│       ├── __init__.py
-│       ├── client.py
-│       └── issues.py
-│
-├── docs/
-│   ├── API_PLAN.md
-│   ├── ARCHITECTURE.md
-│   ├── CHANGELOG.md
-│   ├── DAILY_PROGRESS.md
-│   ├── LEARNING_NOTES.md
-│   └── PROJECT_PLAN.md
-│
-├── .env.example
-├── .gitignore
-├── requirements.txt
-└── README.md
+â”œâ”€â”€ backend/
+â”‚   â”œâ”€â”€ agents/
+â”‚   â”‚   â”œâ”€â”€ coder.py
+â”‚   â”‚   â”œâ”€â”€ reviewer.py
+â”‚   â”‚   â””â”€â”€ ...
+â”‚   â”œâ”€â”€ github/
+â”‚   â”œâ”€â”€ main.py
+â”‚   â”œâ”€â”€ config.py
+â”‚   â””â”€â”€ schemas.py
+â”œâ”€â”€ frontend/
+â”‚   â”œâ”€â”€ src/
+â”‚   â”œâ”€â”€ public/
+â”‚   â”œâ”€â”€ package.json
+â”‚   â””â”€â”€ vite.config.js
+â”œâ”€â”€ docs/
+â”œâ”€â”€ requirements.txt
+â”œâ”€â”€ pytest.ini
+â”œâ”€â”€ test_workflow.py
+â”œâ”€â”€ .env.example
+â”œâ”€â”€ .gitignore
+â””â”€â”€ README.md
+```
 
-⚙️ Current Backend
-The project currently contains a FastAPI backend.
-Available endpoints:
-GET  /
-GET  /health
-POST /github/issue
+*Note: The structure above highlights the main project components. Individual files may change as development continues.*
 
-Health Check
-GET /health
+## âš™ï¸ Prerequisites
 
-Example response:
-{
-  "status": "healthy"
-}
+Install the following before running the project:
 
-GitHub Issue
-POST /github/issue
+- Python
+- Node.js and npm
+- Git
+- A GitHub personal access token with the permissions required for your repository
+- A Groq API key
 
-Example request:
-{
-  "repo": "om-3531/DevSquad",
-  "issue_number": 1
-}
+## ðŸ“¥ Installation
 
-This endpoint retrieves a GitHub issue through the GitHub API.
-▶️ How to Run
-1. Clone the repository
+### 1. Clone the Repository
+
+```bash
 git clone https://github.com/om-3531/DevSquad.git
 cd DevSquad
+```
 
-2. Install dependencies
+### 2. Create a Python Virtual Environment
+
+**Windows PowerShell:**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+### 3. Install Python Dependencies
+
+```powershell
 python -m pip install -r requirements.txt
+```
 
-3. Start the backend
+### 4. Configure Environment Variables
+
+Create a `.env` file in the project root directory.
+
+Use `.env.example` as a reference if it contains the required variable names. Configure the GitHub token, Groq API key, and any other settings required by the application.
+
+**Important:** Never commit your `.env` file or expose API keys in source code, logs, screenshots, or public repositories.
+
+### 5. Install Frontend Dependencies
+
+```powershell
+cd frontend
+npm install
+```
+
+## â–¶ï¸ Running the Application
+
+Open two terminal windows from the project root.
+
+### Terminal 1: Start the Backend
+
+Activate the virtual environment if necessary, then run:
+
+```powershell
 python -m uvicorn backend.main:app --reload
+```
 
-4. Open the API
-http://127.0.0.1:8000
+The backend should be available at:
 
-5. Open Swagger Documentation
-http://127.0.0.1:8000/docs
+- API root: `http://127.0.0.1:8000`
+- Swagger documentation: `http://127.0.0.1:8000/docs`
+- Health check: `http://127.0.0.1:8000/health`
 
-🔐 Security
-DevSquad will use environment variables for sensitive information such as:
-- GitHub access tokens
-- LLM API keys
-- Other secrets
-Sensitive .env files must never be committed to GitHub.
-Only .env.example should be included in the repository.
-📚 Documentation
-Detailed project documentation is available in the docs directory.
-- [Project Plan](docs/PROJECT_PLAN.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [API Plan](docs/API_PLAN.md)
-- [Daily Progress](docs/DAILY_PROGRESS.md)
-- [Learning Notes](docs/LEARNING_NOTES.md)
-- [Changelog](docs/CHANGELOG.md)
-📈 Development Status
-Completed
-- GitHub repository setup
-- Project documentation
-- FastAPI backend setup
-- Backend configuration
-- Pydantic schemas
-- GitHub API client
-- GitHub issue service
-- GitHub issue API endpoint
-- Health check endpoint
-- Local backend testing
-In Progress
-- Agent architecture
-- Planner Agent
-- Coder Agent
-- Tester Agent
-- Reviewer Agent
-- LangGraph workflow
-Planned
-- Docker sandbox
-- Automated testing
-- Pull Request creation
-- Human approval workflow
-- React dashboard
-- Complete end-to-end agentic workflow
-🎯 Future Goals
-The final goal of DevSquad is to provide an AI-assisted software development workflow where a developer can submit a GitHub issue and receive a tested and reviewed implementation through a controlled multi-agent process.
-Future versions may include:
-- Automatic branch creation
-- Automatic code generation
-- Docker-based code execution
-- Automated test generation
-- Code quality analysis
-- Pull Request generation
-- Human-in-the-loop approval
-- Web dashboard
-- Workflow monitoring
-- Multiple LLM provider support
-👨‍💻 Author
-Om Nagare
-B.Tech Computer Science and Engineering
-⚠️ Project Safety
-DevSquad is designed as a development assistance system.
-Generated code should be reviewed and tested before being merged into production systems.
-Human approval is intentionally included in the workflow.
+### Terminal 2: Start the Frontend
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Open the local URL printed by Vite in your terminal.
+
+## ðŸ”„ How the Workflow Works
+
+1. Select a GitHub repository and issue.
+2. The backend retrieves the issue details and relevant repository context.
+3. The Planner Agent creates an implementation plan.
+4. The Coder Agent generates the proposed code.
+5. The Tester Agent generates tests.
+6. The Reviewer Agent evaluates the implementation.
+7. Generated tests run in an isolated test environment.
+8. Failed reviews or tests can trigger a limited improvement-and-retry cycle.
+9. If the configured quality checks pass and a target path is supplied, the backend can create a branch, commit the generated file, and open a draft pull request.
+10. A human reviews the draft pull request before any merge.
+
+**Safety:** Passing generated tests does not guarantee that code is correct or secure. Always inspect generated code and test results before approving a pull request.
+
+## ðŸ§ª Testing
+
+Run the backend test suite from the project root:
+
+```powershell
+python -m pytest -q
+```
+
+Run the workflow tests separately:
+
+```powershell
+python -m pytest test_workflow.py -v
+```
+
+Check the frontend code:
+
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
+
+## ðŸ” Security and Limitations
+
+- Keep API keys and tokens in environment variables.
+- Review AI-generated code before merging.
+- Treat generated tests as useful checks, not proof of correctness.
+- Draft pull requests require human review.
+- Do not use production credentials or sensitive data in test environments.
+- Verify repository permissions and generated changes before approving a pull request.
+
+## ðŸ‘¨â€ðŸ’» Author
+
+**Om Nagare**
+B.Tech — Computer Science and Engineering
+
+## ðŸ“„ License
+
+Add a license file before describing this project as open source under a specific license.
