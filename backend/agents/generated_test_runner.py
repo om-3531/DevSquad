@@ -12,6 +12,7 @@ class GeneratedTestRunner:
     TIMEOUT_SECONDS = 30
     MEMORY_LIMIT = "256m"
     CPU_LIMIT = "1"
+    APPROVED_DEPENDENCIES = ("pytest", "requests", "httpx")
     DOCKER_ERROR_MARKERS = (
         "docker daemon",
         "cannot connect to the docker",
@@ -155,6 +156,30 @@ class GeneratedTestRunner:
         text = output.lower()
         return any(marker in text for marker in self.DOCKER_ERROR_MARKERS)
 
+    def _verify_image_dependencies(self) -> bool:
+        """Verify that the existing Docker image has all required dependencies installed."""
+        imports = ", ".join(self.APPROVED_DEPENDENCIES)
+        try:
+            check = subprocess.run(
+                [
+                    "docker",
+                    "run",
+                    "--rm",
+                    "--network", "none",
+                    self.IMAGE_NAME,
+                    "python",
+                    "-c",
+                    f"import {imports}",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+            return check.returncode == 0
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError, OSError):
+            return False
+
     def _ensure_image(self) -> str | None:
         try:
             inspect = subprocess.run(
@@ -164,16 +189,18 @@ class GeneratedTestRunner:
                 timeout=15,
                 check=False,
             )
-        except FileNotFoundError:
+        except (FileNotFoundError, PermissionError, OSError) as error:
             return (
-                "Docker CLI was not found. "
-                "Install Docker Desktop and ensure it is running."
+                "Docker CLI could not be started. "
+                "Install Docker Desktop, ensure it is running, and verify local permissions. "
+                f"({type(error).__name__})"
             )
         except subprocess.TimeoutExpired:
             return "Docker image inspection timed out."
 
         if inspect.returncode == 0:
-            return None
+            if self._verify_image_dependencies():
+                return None
 
         inspect_output = (inspect.stdout + "\n" + inspect.stderr).strip()
         if self._is_docker_infra_error(inspect_output):

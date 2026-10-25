@@ -12,13 +12,10 @@ load_dotenv()
 class PlannerAgent:
     def __init__(self):
         api_key = os.getenv("LLM_API_KEY")
-        self.model = os.getenv("LLM_MODEL")
+        self.model = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 
         if not api_key:
             raise ValueError("LLM_API_KEY is missing in .env")
-
-        if not self.model:
-            raise ValueError("LLM_MODEL is missing in .env")
 
         self.client = Groq(api_key=api_key)
 

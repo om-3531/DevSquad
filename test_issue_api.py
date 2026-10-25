@@ -81,3 +81,34 @@ def test_github_issue_missing_repo():
     )
 
     assert response.status_code == 422
+
+
+def test_github_issue_rejects_malformed_repository_identifier():
+    response = client.post(
+        "/github/issue",
+        json={"repo": "owner/repo/extra", "issue_number": 1},
+    )
+
+    assert response.status_code == 422
+
+
+def test_github_repository_rejects_malformed_repository_identifier():
+    response = client.get("/github/repository", params={"repo": "owner/repo/extra"})
+
+    assert response.status_code == 422
+
+
+def test_github_issue_does_not_expose_secrets_from_unexpected_errors():
+    with patch(
+        "backend.main.issue_service.get_issue",
+        new_callable=AsyncMock,
+        side_effect=RuntimeError("upstream failure with gsk_1234567890abcdefghijklmnop"),
+    ):
+        response = client.post(
+            "/github/issue",
+            json={"repo": "om-3531/DevSquad", "issue_number": 1},
+        )
+
+    assert response.status_code == 500
+    assert "gsk_" not in response.json()["detail"]
+    assert response.json()["detail"] == "Internal server error. Check server logs for diagnostic details."

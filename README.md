@@ -1,48 +1,50 @@
 # DevSquad — AI-Powered Software Development Team
 
-DevSquad is an AI-powered, multi-agent software development system that helps developers solve GitHub issues through an organized workflow.
+DevSquad is an AI-powered, multi-agent software development system that assists developers in solving GitHub issues through an organized, multi-stage workflow.
 
-It uses specialized AI agents to plan tasks, generate code, create tests, review implementations, and prepare draft pull requests for human review.
+Specialized AI agents plan solutions, generate Python code, synthesize unit tests, review implementations for security and adherence, run candidate tests in an isolated Docker environment, and prepare a dry-run GitHub write plan for human review.
 
-## ðŸš€ Key Features
+---
 
-- **Planner Agent:** Analyzes GitHub issues and creates an implementation plan.
-- **Coder Agent:** Generates Python code based on the task and implementation plan.
-- **Tester Agent:** Generates tests for the proposed implementation.
-- **Reviewer Agent:** Reviews code for correctness, task relevance, security, and quality.
-- **Automated Test Execution:** Runs generated tests in an isolated test environment.
-- **Retry Workflow:** Allows code improvements when review or test execution fails.
-- **GitHub Integration:** Retrieves issues and repository information.
-- **Draft Pull Requests:** Creates a branch, commits generated code, and opens a draft PR after the workflow passes its quality checks.
-- **Human Oversight:** Generated changes remain subject to human review before merging.
+## 🚀 Key Features
 
-## ðŸ› ï¸ Tech Stack
+- **Planner Agent:** Analyzes GitHub issues and generates a structured implementation plan.
+- **Coder Agent:** Implements Python code with syntax validation, token-limit detection, and context-preserving refinement.
+- **Tester Agent:** Synthesizes isolated, deterministic pytest suites that mock external network calls and avoid restricted modules.
+- **Reviewer Agent:** Critically evaluates proposed code for task satisfaction, security, logic errors, and edge cases.
+- **Isolated Docker Test Runner:** Executes candidate code and tests in a hardened, non-root Docker container with `--network none`, memory/CPU caps, and approved dependencies (`requests`).
+- **Bounded Retry Loop:** Automatically feeds review feedback and test failures back into the coder agent for up to 2 correction attempts.
+- **Safe GitHub Integration:** Fetches issue and repository context and simulates the branch, commit, and draft-PR operations required after explicit human authorization. The workflow endpoint never performs GitHub writes.
+- **Interactive UI Dashboard:** React/Vite dashboard displaying real-time pipeline status, reviewer notes, test output, and draft pull-request links.
+
+---
+
+## 🛠 Tech Stack
 
 ### Backend
-- Python
-- FastAPI
-- Pydantic
-- HTTPX
-- Uvicorn
+- **Python 3.12+**
+- **FastAPI**: Async REST API with CORS support
+- **Uvicorn**: ASGI server
+- **Pydantic**: Request and schema validation
+- **HTTPX**: Async HTTP client for GitHub API interactions
 
-### AI and Agent Workflow
-- LangGraph
-- Groq
-- Large Language Models
-- Prompt Engineering
+### AI Agents & Orchestration
+- **Groq SDK**: LLM inference (e.g. `openai/gpt-oss-20b` or `llama-3.3-70b-versatile`)
+- **LangGraph**: Workflow planning and state structure
+- **Custom Agent Loop**: Structured prompt engineering, syntax verification, and retry handling
+
+### Isolated Testing & Quality Gates
+- **Docker**: Containerized execution with resource limits and network isolation
+- **pytest**: Test execution runner
 
 ### Frontend
-- React
-- JavaScript
-- Vite
+- **React 19**
+- **Vite**
+- **Vanilla CSS**: Clean, responsive dashboard layout
 
-### Testing and Development
-- pytest
-- pytest-asyncio
-- Git and GitHub
-- Docker
+---
 
-## ðŸ—ï¸ Architecture
+## 🏗 Architecture & Workflow
 
 ```text
                     GitHub
@@ -51,7 +53,7 @@ It uses specialized AI agents to plan tasks, generate code, create tests, review
                  GitHub Issue
                        |
                        v
-                FastAPI Backend
+                 FastAPI Backend
                        |
                        v
                  Agent Workflow
@@ -67,7 +69,8 @@ It uses specialized AI agents to plan tasks, generate code, create tests, review
                     Reviewer
                        |
                        v
-                Generated Tests
+                Isolated Tests
+                 (Docker test runner)
                        |
              +---------+---------+
              |                   |
@@ -75,179 +78,240 @@ It uses specialized AI agents to plan tasks, generate code, create tests, review
          Tests Pass          Tests Fail
              |                   |
              v                   v
-        Quality Gate       Retry / Review
+        Quality Gate       Retry / Review (Up to 2x)
              |
              v
-       Create Git Branch
+     Persistent Proposal
+       (human approval)
              |
              v
-        Commit Changes
-             |
-             v
-       Draft Pull Request
-             |
-             v
-       Human Review
+       No GitHub writes
 ```
 
-The workflow only creates a draft pull request when the configured review and generated-test checks pass and a valid target path is provided. Failed checks do not automatically authorize repository changes.
+The workflow only marks a candidate ready for a future draft pull request when:
+1. Reviewer issues `VERDICT: APPROVE`.
+2. Generated tests pass in the isolated Docker container.
+3. A valid, non-existing `.py` target path is supplied.
 
-## ðŸ“ Project Structure
+### Proposal persistence and approval
+
+Successful dry runs create a proposal stored in local SQLite (`PROPOSAL_DB_PATH`,
+default `backend/data/proposals.sqlite3`). The database stores the candidate text
+only for server-side digest verification; proposal endpoints return metadata and
+the reviewed diff, not a `proposed_content` field. Approval is atomic, expires
+after the configured TTL, and only records approval—it does not create a branch,
+commit, or pull request. SQLite is suitable for this single-machine deployment;
+a multi-instance deployment needs shared storage plus real user authentication
+and authorization before approvals can be attributed to people.
+
+---
+
+## 📁 Project Structure
 
 ```text
 DevSquad/
-â”œâ”€â”€ backend/
-â”‚   â”œâ”€â”€ agents/
-â”‚   â”‚   â”œâ”€â”€ coder.py
-â”‚   â”‚   â”œâ”€â”€ reviewer.py
-â”‚   â”‚   â””â”€â”€ ...
-â”‚   â”œâ”€â”€ github/
-â”‚   â”œâ”€â”€ main.py
-â”‚   â”œâ”€â”€ config.py
-â”‚   â””â”€â”€ schemas.py
-â”œâ”€â”€ frontend/
-â”‚   â”œâ”€â”€ src/
-â”‚   â”œâ”€â”€ public/
-â”‚   â”œâ”€â”€ package.json
-â”‚   â””â”€â”€ vite.config.js
-â”œâ”€â”€ docs/
-â”œâ”€â”€ requirements.txt
-â”œâ”€â”€ pytest.ini
-â”œâ”€â”€ test_workflow.py
-â”œâ”€â”€ .env.example
-â”œâ”€â”€ .gitignore
-â””â”€â”€ README.md
+├── backend/
+│   ├── agents/
+│   │   ├── coder.py                # Coder agent with syntax verification & retry
+│   │   ├── planner.py              # Implementation planner agent
+│   │   ├── reviewer.py             # Code reviewer agent
+│   │   ├── tester.py               # Pytest synthesis agent
+│   │   ├── test_runner.py          # Local test runner utility
+│   │   ├── generated_test_runner.py# Isolated Docker container runner
+│   │   └── llm_text.py             # Markdown fence parsing
+│   ├── github/
+│   │   ├── client.py               # GitHub API client (branches, commits, PRs)
+│   │   ├── issues.py               # Issue fetching service
+│   │   └── repository.py           # Repository metadata & contents service
+│   ├── config.py                   # Configuration and settings loader
+│   ├── schemas.py                  # Pydantic input/output models
+│   └── main.py                     # FastAPI application endpoints
+├── frontend/
+│   ├── src/
+│   │   ├── App.jsx                 # Dashboard UI component
+│   │   ├── App.css                 # Responsive dashboard styling
+│   │   └── main.jsx                # Application root
+│   ├── package.json                # Frontend dependencies
+│   └── vite.config.js              # Vite configuration
+├── Dockerfile.test                 # Isolated test runner container image
+├── requirements.txt                # Python backend dependencies
+├── pytest.ini                      # Pytest configuration
+├── test_workflow.py                # End-to-end mocked workflow tests
+├── test_coder_agent.py             # Coder agent unit tests
+├── test_generated_test_runner.py   # Container execution tests
+├── .env.example                    # Template for required environment variables
+└── README.md                       # Project documentation
 ```
 
-*Note: The structure above highlights the main project components. Individual files may change as development continues.*
+---
 
-## âš™ï¸ Prerequisites
+## ⚙️ Prerequisites
 
-Install the following before running the project:
+1. **Python 3.12+**: Ensure Python is in your PATH.
+2. **Node.js (v18+) & npm**: For running the Vite frontend.
+3. **Docker Desktop**: Required for the isolated candidate test execution environment.
+4. **Groq API Key**: Obtain a key from the [Groq Console](https://console.groq.com).
+5. **GitHub Personal Access Token**: Create a token with `repo` scope permissions for repository access and draft PR creation.
 
-- Python
-- Node.js and npm
-- Git
-- A GitHub personal access token with the permissions required for your repository
-- A Groq API key
+---
 
-## ðŸ“¥ Installation
+## 📥 Installation & Setup
 
 ### 1. Clone the Repository
 
-```bash
+```powershell
 git clone https://github.com/om-3531/DevSquad.git
 cd DevSquad
 ```
 
-### 2. Create a Python Virtual Environment
-
-**Windows PowerShell:**
+### 2. Configure Python Virtual Environment (Windows PowerShell)
 
 ```powershell
+# If script execution is restricted, allow for current process:
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+
+# Create and activate virtual environment
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
+# Install backend dependencies
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-### 3. Install Python Dependencies
+### 3. Build the Isolated Docker Test Image
+
+Ensure Docker Desktop is running, then build the test runner container:
 
 ```powershell
-python -m pip install -r requirements.txt
+docker build -t devsquad-test-runner -f Dockerfile.test .
 ```
 
 ### 4. Configure Environment Variables
 
-Create a `.env` file in the project root directory.
+Copy the `.env.example` template to `.env`:
 
-Use `.env.example` as a reference if it contains the required variable names. Configure the GitHub token, Groq API key, and any other settings required by the application.
+```powershell
+Copy-Item .env.example .env
+```
 
-**Important:** Never commit your `.env` file or expose API keys in source code, logs, screenshots, or public repositories.
+Open `.env` and fill in your credentials:
+
+```env
+GITHUB_TOKEN=ghp_yourActualGitHubTokenHere
+GITHUB_REPO=your_username/your_repo
+LLM_API_KEY=gsk_yourActualGroqApiKeyHere
+LLM_MODEL=openai/gpt-oss-120b
+```
+
+> **Security Note:** Never commit `.env` or share API tokens. The `.gitignore` file includes `.env` to prevent accidental commits.
 
 ### 5. Install Frontend Dependencies
 
 ```powershell
 cd frontend
 npm install
+cd ..
 ```
 
-## â–¶ï¸ Running the Application
+---
 
-Open two terminal windows from the project root.
+## ▶️ Running the Application
 
-### Terminal 1: Start the Backend
+Open two PowerShell terminal windows from the `DevSquad` project root:
 
-Activate the virtual environment if necessary, then run:
+### Terminal 1: Start Backend (FastAPI)
 
 ```powershell
-python -m uvicorn backend.main:app --reload
+.\.venv\Scripts\Activate.ps1
+uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-The backend should be available at:
+Verify backend health:
+- Health check: [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
+- Interactive API Docs: [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
 
-- API root: `http://127.0.0.1:8000`
-- Swagger documentation: `http://127.0.0.1:8000/docs`
-- Health check: `http://127.0.0.1:8000/health`
-
-### Terminal 2: Start the Frontend
+### Terminal 2: Start Frontend (React/Vite)
 
 ```powershell
 cd frontend
 npm run dev
 ```
 
-Open the local URL printed by Vite in your terminal.
+Open your browser to the local URL (typically [http://localhost:5173](http://localhost:5173)).
 
-## ðŸ”„ How the Workflow Works
+---
 
-1. Select a GitHub repository and issue.
-2. The backend retrieves the issue details and relevant repository context.
-3. The Planner Agent creates an implementation plan.
-4. The Coder Agent generates the proposed code.
-5. The Tester Agent generates tests.
-6. The Reviewer Agent evaluates the implementation.
-7. Generated tests run in an isolated test environment.
-8. Failed reviews or tests can trigger a limited improvement-and-retry cycle.
-9. If the configured quality checks pass and a target path is supplied, the backend can create a branch, commit the generated file, and open a draft pull request.
-10. A human reviews the draft pull request before any merge.
+## 🧪 Testing and Quality Assurance
 
-**Safety:** Passing generated tests does not guarantee that code is correct or secure. Always inspect generated code and test results before approving a pull request.
+### Run Backend Tests
 
-## ðŸ§ª Testing
-
-Run the backend test suite from the project root:
+From the project root with the virtual environment activated:
 
 ```powershell
-python -m pytest -q
-```
+# Run all automated tests
+python -m pytest -v
 
-Run the workflow tests separately:
-
-```powershell
+# Run workflow tests with detailed output
 python -m pytest test_workflow.py -v
+
+# Run test runner and container execution tests
+python -m pytest test_generated_test_runner.py -v
 ```
 
-Check the frontend code:
+### Run Frontend Verification
+
+From the `frontend` folder:
 
 ```powershell
-cd frontend
 npm run lint
 npm run build
 ```
 
-## ðŸ” Security and Limitations
+---
 
-- Keep API keys and tokens in environment variables.
-- Review AI-generated code before merging.
-- Treat generated tests as useful checks, not proof of correctness.
-- Draft pull requests require human review.
-- Do not use production credentials or sensitive data in test environments.
-- Verify repository permissions and generated changes before approving a pull request.
+## 💡 How to Use the Workflow
 
-## ðŸ‘¨â€ðŸ’» Author
+1. Navigate to the DevSquad dashboard at [http://localhost:5173](http://localhost:5173).
+2. Enter the target **GitHub repository** (`owner/repository`).
+3. Enter the **Issue number** (e.g., `1`).
+4. (Optional) Provide a **New Python file path** (e.g., `src/solution.py`):
+   - If provided and all review & tests pass, the workflow returns a clearly labelled write simulation; it does not create a branch, commit, or pull request.
+   - If omitted, the workflow will plan, generate code, test, and review safely *without making any GitHub changes*.
+5. Click **Run AI workflow**.
+6. Monitor the 5-stage pipeline and inspect the reviewer feedback, synthesized unit tests, and candidate code in the execution output panel.
 
-**Om Nagare**
-B.Tech — Computer Science and Engineering
+---
 
-## ðŸ“„ License
+## Read-only Integration Checks
 
-Add a license file before describing this project as open source under a specific license.
+Start the backend first. These checks do not create GitHub branches, commits, issues, or pull requests.
+
+```powershell
+# Read one issue through the configured GitHub token.
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/github/issue -ContentType 'application/json' -Body '{"repo":"owner/repository","issue_number":1}'
+
+# Ask the provider for configured-model status. This calls the provider's model-list API,
+# not a completion endpoint, and should be skipped if you do not want any provider request.
+Invoke-RestMethod -Uri http://127.0.0.1:8000/models/status
+
+# Verify Docker availability before attempting an isolated candidate run.
+docker version
+docker image inspect devsquad-test-runner
+```
+
+Do not include tokens in these commands or paste them into a terminal transcript. Configure them only in the local `.env` file.
+
+---
+
+## 🔧 Troubleshooting & Known Limitations
+
+- **Docker Connectivity:**
+  - *Symptom:* `status: "TEST_ENVIRONMENT_ERROR"` with message `"Docker is not available"`.
+  - *Fix:* Ensure Docker Desktop is started and the `devsquad-test-runner` image has been built (`docker build -t devsquad-test-runner -f Dockerfile.test .`).
+- **LLM Truncation / Empty Responses:**
+  - The Coder agent detects token-limit truncation (`finish_reason="length"`) and automatically retries with a focused prompt. If a task is very large, break the GitHub issue into smaller, modular sub-tasks.
+- **Candidate Dependencies in Container:**
+  - Standard library modules and `requests==2.32.3` are approved and available in the container. Network access is disabled in the container (`--network none`) for safety; tests must mock external network calls.
+- **GitHub Rate Limits:**
+  - Ensure `GITHUB_TOKEN` is configured to prevent unauthenticated GitHub API rate limits.
