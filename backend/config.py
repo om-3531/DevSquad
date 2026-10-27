@@ -16,6 +16,7 @@ class Settings:
             load_dotenv(dotenv_path=ENV_PATH, override=override)
         default_proposal_db = Path(__file__).resolve().parent / "data" / "proposals.sqlite3"
         self.PROPOSAL_DB_PATH: str = os.getenv("PROPOSAL_DB_PATH", str(default_proposal_db))
+        self.WORKFLOW_DB_PATH: str = os.getenv("WORKFLOW_DB_PATH", self.PROPOSAL_DB_PATH)
         self.APPROVAL_AUTH_TOKENS: str | None = os.getenv("APPROVAL_AUTH_TOKENS")
         self.GITHUB_TOKEN: str | None = os.getenv("GITHUB_TOKEN")
         self.GITHUB_REPO: str | None = os.getenv("GITHUB_REPO")

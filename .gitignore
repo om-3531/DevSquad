@@ -16,3 +16,4 @@ htmlcov/
 backend/data/*.sqlite3
 backend/data/*.sqlite3-shm
 backend/data/*.sqlite3-wal
+.pytest-tmp/

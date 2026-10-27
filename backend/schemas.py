@@ -69,3 +69,7 @@ class ProposalApprovalRequest(BaseModel):
         if not re.fullmatch(r"[0-9a-f]{64}", clean):
             raise ValueError("content_digest must be a SHA-256 digest.")
         return clean
+
+
+class DiagnoseRequest(BaseModel):
+    force_refresh: bool = False

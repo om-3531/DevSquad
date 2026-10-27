@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 
 PROPOSAL_READER = "proposal_reviewer"
 PROPOSAL_APPROVER = "proposal_approver"
+WORKFLOW_READER = "workflow_reader"
 
 
 class AuthenticationConfigurationError(RuntimeError):
@@ -80,6 +81,11 @@ class BearerTokenAuthenticator:
 
     def require_role(self, identity: AuthenticatedIdentity, role: str) -> AuthenticatedIdentity:
         if role not in identity.roles:
+            raise AuthorizationError("You are not authorized to perform this action.")
+        return identity
+
+    def require_any_role(self, identity: AuthenticatedIdentity, roles: tuple[str, ...] | list[str] | set[str] | frozenset[str]) -> AuthenticatedIdentity:
+        if not any(role in identity.roles for role in roles):
             raise AuthorizationError("You are not authorized to perform this action.")
         return identity
 
