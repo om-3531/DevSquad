@@ -492,3 +492,73 @@ def test_end_to_end_workflow_failure_records_failed_status_and_event(monkeypatch
 
     events = test_store.get_workflow_events(record.workflow_id)
     assert any(e.event_type == EVENT_WORKFLOW_FAILED for e in events)
+
+
+def test_workflow_records_events_on_proposal_approval_and_rejection(monkeypatch: pytest.MonkeyPatch, isolated_db_path: Path):
+    from backend.proposals import ProposalStore
+    from backend.workflows import EVENT_PROPOSAL_APPROVED, EVENT_PROPOSAL_REJECTED
+
+    test_wf_store = WorkflowStore(isolated_db_path)
+    test_prop_store = ProposalStore(isolated_db_path.parent / "test_p.sqlite3")
+
+    monkeypatch.setattr("backend.main.workflow_store", test_wf_store)
+    monkeypatch.setattr("backend.main.proposal_store", test_prop_store)
+    monkeypatch.setenv("APPROVAL_AUTH_TOKENS", json.dumps(TEST_TOKENS_CONFIG))
+
+    proposal = test_prop_store.create(
+        repository="om-3531/DevSquad",
+        issue_number=1,
+        target_branch="main",
+        target_path="backend/test.py",
+        operation="modify",
+        proposed_content="code",
+        diff_preview={"reliable": True, "changed": True},
+        quality_gate_status="REVIEW_APPROVED_GENERATED_TESTS_PASSED",
+    )
+
+    wf = test_wf_store.create_workflow(
+        repository="om-3531/DevSquad",
+        issue_number=1,
+        status="RUNNING",
+        stage="FINALIZING",
+    )
+    test_wf_store.update_workflow(wf.workflow_id, proposal_id=proposal.proposal_id)
+
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {APPROVER_TOKEN}"}
+
+    # Approve
+    res_app = client.post(
+        f"/proposals/{proposal.proposal_id}/approve",
+        headers=headers,
+        json={"content_digest": proposal.content_digest},
+    )
+    assert res_app.status_code == 200
+
+    events = test_wf_store.get_workflow_events(wf.workflow_id)
+    types = [e.event_type for e in events]
+    assert EVENT_PROPOSAL_APPROVED in types
+
+
+def test_workflow_history_empty_state_and_auth_failures(monkeypatch: pytest.MonkeyPatch, isolated_db_path: Path):
+    test_wf_store = WorkflowStore(isolated_db_path)
+    monkeypatch.setattr("backend.main.workflow_store", test_wf_store)
+    monkeypatch.setenv("APPROVAL_AUTH_TOKENS", json.dumps(TEST_TOKENS_CONFIG))
+
+    client = TestClient(app)
+
+    # Missing token -> 401
+    res_no_auth = client.get("/workflows")
+    assert res_no_auth.status_code == 401
+
+    # Invalid token -> 401
+    res_bad_auth = client.get("/workflows", headers={"Authorization": "Bearer bad-token"})
+    assert res_bad_auth.status_code == 401
+
+    # Valid token on empty DB -> 200 with empty list
+    res_valid = client.get("/workflows", headers={"Authorization": f"Bearer {WORKFLOW_READER_TOKEN}"})
+    assert res_valid.status_code == 200
+    data = res_valid.json()
+    assert data["status"] == "success"
+    assert data["workflows"] == []
+    assert data["total"] == 0

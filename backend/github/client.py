@@ -1,4 +1,7 @@
 
+import asyncio
+import logging
+import random
 import httpx
 
 from backend.config import settings
@@ -8,6 +11,23 @@ from backend.github.validation import (
     validate_repository,
     validate_sha,
 )
+
+logger = logging.getLogger("backend.github.client")
+
+RETRYABLE_EXCEPTIONS = (
+    httpx.RemoteProtocolError,
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.CloseError,
+    httpx.NetworkError,
+)
+
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class GitHubWritesDisabledError(PermissionError):
@@ -37,16 +57,80 @@ class GitHubClient:
         if not settings.GITHUB_WRITES_ENABLED:
             raise GitHubWritesDisabledError("GitHub writes are disabled.")
 
+    async def _request_with_retry(
+        self,
+        method: str,
+        url: str,
+        *,
+        json_data: object = None,
+        params: dict | None = None,
+        timeout: float = 15.0,
+        max_retries: int = 3,
+        base_backoff: float = 0.5,
+    ) -> httpx.Response:
+        last_exc: Exception | None = None
+        for attempt in range(max_retries + 1):
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    if method.upper() == "GET":
+                        response = await client.get(url, headers=self.headers, params=params)
+                    elif method.upper() == "POST":
+                        response = await client.post(url, headers=self.headers, json=json_data, params=params)
+                    elif method.upper() == "PATCH":
+                        response = await client.patch(url, headers=self.headers, json=json_data, params=params)
+                    elif method.upper() == "PUT":
+                        response = await client.put(url, headers=self.headers, json=json_data, params=params)
+                    else:
+                        response = await client.request(method, url, headers=self.headers, json=json_data, params=params)
+
+                if response.status_code in RETRYABLE_STATUS_CODES and attempt < max_retries:
+                    retry_after_str = response.headers.get("Retry-After")
+                    delay = base_backoff * (2 ** attempt) + random.uniform(0.01, 0.05)
+                    if retry_after_str:
+                        try:
+                            delay = max(delay, float(retry_after_str))
+                        except ValueError:
+                            pass
+                    delay = min(delay, 10.0)
+                    logger.warning(
+                        "GitHub API returned HTTP %s on %s %s. Retrying in %.2fs (attempt %d/%d)...",
+                        response.status_code, method, url, delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+
+                response.raise_for_status()
+                return response
+
+            except RETRYABLE_EXCEPTIONS as exc:
+                last_exc = exc
+                if attempt < max_retries:
+                    delay = min(base_backoff * (2 ** attempt) + random.uniform(0.01, 0.05), 10.0)
+                    logger.warning(
+                        "GitHub API transient error %s on %s %s. Retrying in %.2fs (attempt %d/%d)...",
+                        type(exc).__name__, method, url, delay, attempt + 1, max_retries,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.error(
+                        "GitHub API retries exhausted for %s %s after %d attempts: %s",
+                        method, url, max_retries + 1, exc,
+                    )
+                    raise
+            except httpx.HTTPStatusError:
+                raise
+
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Unexpected retry loop termination.")
+
     async def get_issue(self, repo: str, issue_number: int):
         validate_repository(repo)
         if not isinstance(issue_number, int) or issue_number < 1:
             raise ValueError("Invalid GitHub issue number.")
         url = f"{self.base_url}/repos/{repo}/issues/{issue_number}"
-
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+        response = await self._request_with_retry("GET", url, timeout=15.0)
+        return response.json()
 
     async def create_issue(
         self,
@@ -56,16 +140,29 @@ class GitHubClient:
     ) -> dict:
         self._require_writes_enabled()
         validate_repository(repo)
+
         if not isinstance(title, str) or not title.strip():
             raise ValueError("Issue title cannot be empty.")
+
         url = f"{self.base_url}/repos/{repo}/issues"
-        payload: dict[str, str] = {"title": title.strip()}
+        payload = {"title": title.strip()}
+
         if body is not None:
             payload["body"] = body
 
         async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(url, headers=self.headers, json=payload)
+            response = await client.post(
+                url,
+                headers=self.headers,
+                json=payload,
+            )
             response.raise_for_status()
+
+            if response.status_code != 201:
+                raise RuntimeError(
+                    f"Unexpected GitHub API response status: HTTP {response.status_code}"
+                )
+
             return response.json()
 
     async def get_issues(
@@ -76,35 +173,24 @@ class GitHubClient:
     ) -> list[dict]:
         validate_repository(repo)
         url = f"{self.base_url}/repos/{repo}/issues"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                url,
-                headers=self.headers,
-                params={"state": state},
-            )
-            response.raise_for_status()
-            data = response.json()
-            if filter_pull_requests and isinstance(data, list):
-                return [item for item in data if "pull_request" not in item]
-            return data
+        response = await self._request_with_retry("GET", url, params={"state": state}, timeout=15.0)
+        data = response.json()
+        if filter_pull_requests and isinstance(data, list):
+            return [item for item in data if "pull_request" not in item]
+        return data
 
     async def get_repository(self, repo: str) -> dict:
         validate_repository(repo)
         url = f"{self.base_url}/repos/{repo}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.json()
+        response = await self._request_with_retry("GET", url, timeout=15.0)
+        return response.json()
 
     async def get_branch_sha(self, repo: str, branch: str = "main"):
         validate_repository(repo)
         validate_git_ref(branch)
         url = f"{self.base_url}/repos/{repo}/git/ref/heads/{branch}"
-
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(url, headers=self.headers)
-            response.raise_for_status()
-            return response.json()["object"]["sha"]
+        response = await self._request_with_retry("GET", url, timeout=15.0)
+        return response.json()["object"]["sha"]
 
     async def create_branch(
         self,
@@ -128,32 +214,37 @@ class GitHubClient:
             raise GitHubStaleRevisionError("The source branch changed after review.")
         url = f"{self.base_url}/repos/{repo}/git/refs"
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                url,
-                headers=self.headers,
-                json={
-                    "ref": f"refs/heads/{branch_name}",
-                    "sha": source_sha,
-                },
-            )
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    url,
+                    headers=self.headers,
+                    json={
+                        "ref": f"refs/heads/{branch_name}",
+                        "sha": source_sha,
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+        except RETRYABLE_EXCEPTIONS:
+            # Reconcile remote state: check if branch was created despite the connection drop
+            if await self.branch_exists(repo, branch_name):
+                logger.info("Branch %s already created after transient error. Reconciled remote state.", branch_name)
+                return {"ref": f"refs/heads/{branch_name}", "reconciled": True}
+            raise
 
     async def get_file_blob_sha(self, repo: str, path: str, branch: str) -> str | None:
         """Read a file blob SHA, returning None only when the file is absent."""
         validate_repository(repo)
         validate_file_path(path)
         validate_git_ref(branch)
-        url = f"{self.base_url}/repos/{repo}/contents/{path}?ref={branch}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            try:
-                response = await client.get(url, headers=self.headers)
-                response.raise_for_status()
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    return None
-                raise
+        url = f"{self.base_url}/repos/{repo}/contents/{path}"
+        try:
+            response = await self._request_with_retry("GET", url, params={"ref": branch}, timeout=15.0)
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                return None
+            raise
         data = response.json()
         sha = data.get("sha")
         return validate_sha(sha) if isinstance(sha, str) else None
@@ -162,15 +253,13 @@ class GitHubClient:
         validate_repository(repo)
         validate_git_ref(branch)
         url = f"{self.base_url}/repos/{repo}/git/ref/heads/{branch}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            try:
-                response = await client.get(url, headers=self.headers)
-                response.raise_for_status()
-                return True
-            except httpx.HTTPStatusError as error:
-                if error.response.status_code == 404:
-                    return False
-                raise
+        try:
+            response = await self._request_with_retry("GET", url, timeout=15.0)
+            return True
+        except httpx.HTTPStatusError as error:
+            if error.response.status_code == 404:
+                return False
+            raise
 
     async def ensure_branch(
         self,
@@ -276,12 +365,20 @@ class GitHubClient:
             response.raise_for_status()
             new_commit = response.json()
 
-            response = await client.patch(
-                f"{self.base_url}/repos/{repo}/git/refs/heads/{branch}",
-                headers=self.headers,
-                json={"sha": new_commit["sha"], "force": False},
-            )
-            response.raise_for_status()
+            try:
+                response = await client.patch(
+                    f"{self.base_url}/repos/{repo}/git/refs/heads/{branch}",
+                    headers=self.headers,
+                    json={"sha": new_commit["sha"], "force": False},
+                )
+                response.raise_for_status()
+            except RETRYABLE_EXCEPTIONS:
+                # Reconcile: check if the branch ref was updated to the new commit SHA
+                current_head = await self.get_branch_sha(repo, branch)
+                if current_head.lower() == new_commit["sha"].lower():
+                    logger.info("Ref heads/%s updated to %s despite transient error. Reconciled.", branch, new_commit["sha"])
+                else:
+                    raise
 
             return {
                 "commit_sha": new_commit["sha"],
@@ -289,6 +386,31 @@ class GitHubClient:
                 "branch": branch,
                 "files": list(files.keys()),
             }
+
+    async def get_pull_request_by_head(self, repo: str, head: str) -> dict | None:
+        """Find an existing open or closed pull request matching the head branch."""
+        validate_repository(repo)
+        validate_git_ref(head)
+        url = f"{self.base_url}/repos/{repo}/pulls"
+        try:
+            owner = repo.split("/")[0]
+            qualified_head = f"{owner}:{head}"
+            response = await self._request_with_retry(
+                "GET", url, params={"head": qualified_head, "state": "all"}, timeout=15.0
+            )
+            data = response.json()
+            if isinstance(data, list) and data:
+                return data[0]
+            # Try unqualified head if owner-qualified search did not return a match
+            response = await self._request_with_retry(
+                "GET", url, params={"head": head, "state": "all"}, timeout=15.0
+            )
+            data = response.json()
+            if isinstance(data, list) and data:
+                return data[0]
+            return None
+        except Exception:
+            return None
 
     async def create_pull_request(
         self,
@@ -318,17 +440,33 @@ class GitHubClient:
         if (await self.get_branch_sha(repo, base)).lower() != expected_base_sha:
             raise GitHubStaleRevisionError("The pull request base changed after review.")
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.post(
-                f"{self.base_url}/repos/{repo}/pulls",
-                headers=self.headers,
-                json={
-                    "title": title,
-                    "head": head,
-                    "base": base,
-                    "body": body,
-                    "draft": True,
-                },
-            )
-            response.raise_for_status()
-            return response.json()
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    f"{self.base_url}/repos/{repo}/pulls",
+                    headers=self.headers,
+                    json={
+                        "title": title,
+                        "head": head,
+                        "base": base,
+                        "body": body,
+                        "draft": True,
+                    },
+                )
+                response.raise_for_status()
+                return response.json()
+        except httpx.HTTPStatusError as error:
+            # If GitHub returns 422 because PR already exists, reconcile remote state
+            if error.response.status_code == 422:
+                existing = await self.get_pull_request_by_head(repo, head)
+                if existing:
+                    logger.info("Found existing pull request for head %s after 422. Reconciled remote state.", head)
+                    return existing
+            raise
+        except RETRYABLE_EXCEPTIONS:
+            # If network failed ambiguously, check if PR was created
+            existing = await self.get_pull_request_by_head(repo, head)
+            if existing:
+                logger.info("Found existing pull request for head %s after transient error. Reconciled remote state.", head)
+                return existing
+            raise

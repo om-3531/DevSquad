@@ -1,8 +1,13 @@
 
 import ast
+import logging
+import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 class GeneratedTestRunner:
@@ -12,7 +17,7 @@ class GeneratedTestRunner:
     TIMEOUT_SECONDS = 30
     MEMORY_LIMIT = "256m"
     CPU_LIMIT = "1"
-    APPROVED_DEPENDENCIES = ("pytest", "requests", "httpx")
+    APPROVED_DEPENDENCIES = ("pytest", "pytest_asyncio", "requests", "httpx", "dotenv")
     DOCKER_ERROR_MARKERS = (
         "docker daemon",
         "cannot connect to the docker",
@@ -23,12 +28,16 @@ class GeneratedTestRunner:
         "unable to find image",
         "pull access denied",
         "is the docker daemon running",
+        "error response from daemon",
+        "daemon is not running",
+        "pipe/docker",
     )
 
     def run_generated_tests(
         self,
         proposed_code: str,
         generated_tests: str,
+        target_path: str = "",
     ) -> dict:
         if not proposed_code.strip() or not generated_tests.strip():
             return {
@@ -36,6 +45,12 @@ class GeneratedTestRunner:
                 "passed": False,
                 "summary": "Proposed code or generated tests are empty.",
                 "return_code": None,
+                "stdout": "",
+                "stderr": "",
+                "failed_tests": [],
+                "tracebacks": "",
+                "infrastructure_error": False,
+                "timed_out": False,
             }
 
         try:
@@ -47,18 +62,85 @@ class GeneratedTestRunner:
                 "passed": False,
                 "summary": f"Invalid Python syntax: {error}",
                 "return_code": None,
+                "stdout": "",
+                "stderr": str(error),
+                "failed_tests": [],
+                "tracebacks": "",
+                "infrastructure_error": False,
+                "timed_out": False,
             }
 
         with tempfile.TemporaryDirectory(
             prefix="devsquad-tests-"
         ) as temp:
             workdir = Path(temp)
+
+            # Copy project backend package so candidate can reuse existing project architecture
+            project_root = Path(__file__).resolve().parents[2]
+            backend_src = project_root / "backend"
+            if backend_src.is_dir():
+                try:
+                    shutil.copytree(
+                        backend_src,
+                        workdir / "backend",
+                        ignore=shutil.ignore_patterns(
+                            "__pycache__", "*.pyc", "proposals.sqlite3", "*.sqlite3", "*.db"
+                        ),
+                    )
+                except Exception as copy_err:
+                    logger.warning("Could not copy backend into sandbox: %s", copy_err)
+
+            # Write pytest.ini with asyncio auto-discovery
+            (workdir / "pytest.ini").write_text(
+                "[pytest]\nasyncio_mode = auto\n",
+                encoding="utf-8",
+            )
+
+            # Write conftest.py to ensure validate_repository is available in sandbox
+            (workdir / "conftest.py").write_text(
+                "import builtins\n"
+                "try:\n"
+                "    from backend.github.validation import validate_repository\n"
+                "    builtins.validate_repository = validate_repository\n"
+                "except Exception:\n"
+                "    pass\n",
+                encoding="utf-8",
+            )
+
             (workdir / "candidate.py").write_text(
                 proposed_code,
                 encoding="utf-8",
             )
-            (workdir / "test_candidate.py").write_text(
+
+            if target_path and not Path(target_path).is_absolute() and ".." not in target_path:
+                target_file = workdir / target_path
+                target_file.parent.mkdir(parents=True, exist_ok=True)
+                target_file.write_text(proposed_code, encoding="utf-8")
+
+            # Sanitize any accidental builtins.validate_repository references
+            sanitized_tests = re.sub(
+                r'patch\.object\s*\(\s*builtins\s*,\s*["\']validate_repository["\']',
+                'patch("candidate.validate_repository"',
                 generated_tests,
+            )
+            sanitized_tests = re.sub(
+                r'patch\s*\(\s*["\']builtins\.validate_repository["\']',
+                'patch("candidate.validate_repository"',
+                sanitized_tests,
+            )
+            sanitized_tests = re.sub(
+                r'builtins\.validate_repository',
+                'candidate.validate_repository',
+                sanitized_tests,
+            )
+            sanitized_tests = re.sub(
+                r'patch\.object\s*\(\s*validate_repository\s*,\s*["\']__call__["\']',
+                'patch("candidate.validate_repository"',
+                sanitized_tests,
+            )
+
+            (workdir / "test_candidate.py").write_text(
+                sanitized_tests,
                 encoding="utf-8",
             )
 
@@ -69,6 +151,12 @@ class GeneratedTestRunner:
                     "passed": False,
                     "summary": image_error[-2000:],
                     "return_code": None,
+                    "stdout": "",
+                    "stderr": image_error,
+                    "failed_tests": [],
+                    "tracebacks": "",
+                    "infrastructure_error": True,
+                    "timed_out": False,
                 }
 
             command = [
@@ -91,6 +179,7 @@ class GeneratedTestRunner:
                 ),
                 "--workdir", "/workspace",
                 "--env", "PYTHONDONTWRITEBYTECODE=1",
+                "--env", "PYTHONPATH=/workspace",
                 self.IMAGE_NAME,
                 "python",
                 "-m",
@@ -98,6 +187,8 @@ class GeneratedTestRunner:
                 "-q",
                 "-p",
                 "no:cacheprovider",
+                "-o",
+                "asyncio_mode=auto",
                 "test_candidate.py",
             ]
 
@@ -118,6 +209,12 @@ class GeneratedTestRunner:
                         f"{self.TIMEOUT_SECONDS} seconds."
                     ),
                     "return_code": None,
+                    "stdout": "",
+                    "stderr": f"Tests timed out after {self.TIMEOUT_SECONDS}s.",
+                    "failed_tests": [],
+                    "tracebacks": "",
+                    "infrastructure_error": False,
+                    "timed_out": True,
                 }
             except FileNotFoundError:
                 return {
@@ -128,26 +225,64 @@ class GeneratedTestRunner:
                         "Install Docker Desktop and ensure it is running."
                     ),
                     "return_code": None,
+                    "stdout": "",
+                    "stderr": "Docker CLI executable not found on host PATH.",
+                    "failed_tests": [],
+                    "tracebacks": "",
+                    "infrastructure_error": True,
+                    "timed_out": False,
                 }
 
         output = (result.stdout + "\n" + result.stderr).strip()
 
-        if self._is_docker_infra_error(output):
+        if self._is_docker_infra_error(output) or result.returncode == 125:
             return {
                 "status": "DOCKER_ERROR",
                 "passed": False,
                 "summary": output[-2000:] or "Docker execution failed.",
                 "return_code": result.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "failed_tests": [],
+                "tracebacks": "",
+                "infrastructure_error": True,
+                "timed_out": False,
             }
 
         passed = result.returncode == 0
+        failed_tests = self._extract_failed_tests(output)
+        tracebacks = self._extract_tracebacks(output)
 
         return {
             "status": "TESTS_PASSED" if passed else "TESTS_FAILED",
             "passed": passed,
             "summary": output[-2000:] or "No test output was produced.",
             "return_code": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+            "failed_tests": failed_tests,
+            "tracebacks": tracebacks,
+            "infrastructure_error": False,
+            "timed_out": False,
         }
+
+    def _extract_failed_tests(self, output: str) -> list[str]:
+        """Extract failed test names from pytest output."""
+        matches = re.findall(r"FAILED\s+[^:\s]+::([a-zA-Z0-9_]+)", output)
+        if not matches:
+            matches = re.findall(r"_{3,}\s+([a-zA-Z0-9_]+)\s+_{3,}", output)
+        return list(dict.fromkeys(matches))
+
+    def _extract_tracebacks(self, output: str) -> str:
+        """Extract relevant failure traceback blocks from pytest output."""
+        if "FAILURES" in output or "ERRORS" in output:
+            parts = re.split(r"={3,}\s+(?:FAILURES|ERRORS)\s+={3,}", output, maxsplit=1)
+            if len(parts) > 1:
+                tail = parts[1]
+                end_parts = re.split(r"={3,}\s+short test summary info\s+={3,}", tail, maxsplit=1)
+                return end_parts[0].strip()[:3000]
+        return ""
+
 
     def _bind_source(self, path: Path) -> str:
         return str(path.resolve()).replace("\\", "/")

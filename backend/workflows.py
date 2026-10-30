@@ -61,12 +61,16 @@ EVENT_REVIEWER_STARTED = "REVIEWER_STARTED"
 EVENT_REVIEWER_COMPLETED = "REVIEWER_COMPLETED"
 EVENT_REVIEWER_FAILED = "REVIEWER_FAILED"
 EVENT_PROPOSAL_CREATED = "PROPOSAL_CREATED"
+EVENT_PROPOSAL_APPROVED = "PROPOSAL_APPROVED"
+EVENT_PROPOSAL_REJECTED = "PROPOSAL_REJECTED"
 EVENT_WORKFLOW_SUCCEEDED = "WORKFLOW_SUCCEEDED"
 EVENT_WORKFLOW_FAILED = "WORKFLOW_FAILED"
 EVENT_WORKFLOW_CANCELLED = "WORKFLOW_CANCELLED"
 EVENT_DIAGNOSIS_REQUESTED = "DIAGNOSIS_REQUESTED"
 EVENT_DIAGNOSIS_COMPLETED = "DIAGNOSIS_COMPLETED"
 EVENT_WORKFLOW_RETRIED = "WORKFLOW_RETRIED"
+EVENT_MODEL_FALLBACK_TRIGGERED = "MODEL_FALLBACK_TRIGGERED"
+
 
 
 class WorkflowStorageError(RuntimeError):
@@ -453,6 +457,22 @@ class WorkflowStore:
         except sqlite3.Error as error:
             logger.error("Failed to fetch workflow %s: %s", workflow_id, error)
             raise WorkflowStorageError("Failed to retrieve workflow execution.") from error
+
+    def get_workflow_by_proposal_id(self, proposal_id: str) -> Optional[WorkflowExecution]:
+        """Fetch a single workflow by linked proposal ID."""
+        try:
+            with self._connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM workflows WHERE proposal_id = ? ORDER BY started_at DESC LIMIT 1",
+                    (proposal_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                return self._row_to_execution(row)
+        except sqlite3.Error as error:
+            logger.error("Failed to fetch workflow by proposal_id %s: %s", proposal_id, error)
+            raise WorkflowStorageError("Failed to retrieve workflow execution by proposal ID.") from error
+
 
     def list_workflows(
         self,

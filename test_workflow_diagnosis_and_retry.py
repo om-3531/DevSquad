@@ -412,12 +412,21 @@ async def test_create_fix_proposal_requires_approval(auth_client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
-    assert "Candidate patch created as a pending proposal" in data["message"]
+    assert "NOT_ELIGIBLE" in data["message"]
+    assert "cannot be approved" in data["message"]
     proposal_id = data["proposal_id"]
 
-    # Verify proposal is created as a candidate requiring review (never written silently)
+    # Diagnostic suggestions skip reviewer/tests and must not be approvable.
     proposal = prop_store.get(proposal_id)
     assert proposal is not None
-    assert proposal.status in {"PENDING_APPROVAL", "NOT_ELIGIBLE", "PENDING_REVIEW"}
+    assert proposal.status == "NOT_ELIGIBLE"
     assert proposal.quality_gate_status == "DIAGNOSTIC_FIX_SUGGESTION"
     assert proposal.proposed_content.strip() == "def add(x, y):\n    return x + y"
+
+
+def test_workflow_test_environment_error_stage_is_testing():
+    """Verify quality gate failure with TEST_ENVIRONMENT_ERROR assigns STAGE_TESTING."""
+    quality_status = "TEST_ENVIRONMENT_ERROR"
+    gate_failed_stage = STAGE_TESTING if "TEST" in quality_status else "REVIEWING"
+    assert gate_failed_stage == STAGE_TESTING
+

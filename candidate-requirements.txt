@@ -1,4 +1,6 @@
 # Approved candidate dependencies for isolated test execution
 pytest==9.1.1
+pytest-asyncio==1.4.0
 requests==2.32.3
 httpx==0.28.1
+python-dotenv==1.0.1

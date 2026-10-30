@@ -120,25 +120,39 @@ DevSquad/
 │   │   ├── generated_test_runner.py# Isolated Docker container runner
 │   │   └── llm_text.py             # Markdown fence parsing
 │   ├── github/
-│   │   ├── client.py               # GitHub API client (branches, commits, PRs)
-│   │   ├── issues.py               # Issue fetching service
-│   │   └── repository.py           # Repository metadata & contents service
+│   │   ├── client.py               # Resilient GitHub API client (retry, reconciliation)
+│   │   ├── issues.py               # Issue fetching & creation service
+│   │   ├── repository.py           # Repository metadata & contents service
+│   │   ├── validation.py           # Git ref and path safety validation
+│   │   └── write_orchestrator.py   # Guarded write orchestrator
+│   ├── auth.py                     # Role-based access control & Bearer authenticator
 │   ├── config.py                   # Configuration and settings loader
+│   ├── patch_validator.py          # Multi-file patch validation & traversal protection
+│   ├── proposals.py                # Proposal persistence, digests & human approval
 │   ├── schemas.py                  # Pydantic input/output models
+│   ├── workflows.py                # Workflow execution store, stages & history events
 │   └── main.py                     # FastAPI application endpoints
 ├── frontend/
 │   ├── src/
 │   │   ├── App.jsx                 # Dashboard UI component
 │   │   ├── App.css                 # Responsive dashboard styling
+│   │   ├── proposalApproval.js     # Human approval & error formatting utilities
+│   │   ├── proposalApproval.test.mjs# Frontend node:test suite
 │   │   └── main.jsx                # Application root
 │   ├── package.json                # Frontend dependencies
 │   └── vite.config.js              # Vite configuration
 ├── Dockerfile.test                 # Isolated test runner container image
+├── candidate-requirements.txt      # Hardened dependencies for sandbox runner
 ├── requirements.txt                # Python backend dependencies
 ├── pytest.ini                      # Pytest configuration
-├── test_workflow.py                # End-to-end mocked workflow tests
+├── test_auth_and_proposals.py      # RBAC, approval, and proposal test suite
 ├── test_coder_agent.py             # Coder agent unit tests
 ├── test_generated_test_runner.py   # Container execution tests
+├── test_github_client.py           # GitHub client & transient error retry tests
+├── test_review_and_test_regression.py # Quality gate & terminal state regressions
+├── test_workflow.py                # End-to-end mocked workflow tests
+├── test_workflow_history.py        # History, pagination, and metrics tests
+├── test_write_orchestrator.py      # Guarded branch/commit/PR orchestration tests
 ├── .env.example                    # Template for required environment variables
 └── README.md                       # Project documentation
 ```

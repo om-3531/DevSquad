@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import re
 import threading
 import time
 from collections import defaultdict, deque
@@ -39,6 +40,39 @@ class AuthenticatedIdentity:
     expires_at: datetime | None = None
 
 
+def extract_bearer_token(authorization: str | None) -> str:
+    """Robustly extract and sanitize a bearer token from Authorization header or raw token string."""
+    if not authorization or not str(authorization).strip():
+        return ""
+    candidate = str(authorization).strip()
+
+    # Reject unsupported HTTP auth schemes explicitly
+    lower_raw = candidate.lower()
+    if lower_raw.startswith(("basic ", "basic\t", "digest ", "digest\t", "negotiate ", "negotiate\t")):
+        return ""
+
+    # Strip any outer wrapping quotes, backticks, or angle brackets
+    while candidate and (
+        (candidate[0] in ('"', "'", "`") and candidate[-1] in ('"', "'", "`") and len(candidate) >= 2)
+        or (candidate[0] == "<" and candidate[-1] == ">" and len(candidate) >= 2)
+    ):
+        candidate = candidate[1:-1].strip()
+
+    # Strip schemes like "bearer", "token" followed by whitespace (spaces, tabs, newlines), colons, or equals
+    changed = True
+    while changed and candidate:
+        candidate = candidate.strip().strip("'\"`")
+        new_candidate = re.sub(r"^(bearer|token)[\s:=]+", "", candidate, flags=re.IGNORECASE)
+        if new_candidate != candidate:
+            candidate = new_candidate
+            changed = True
+        else:
+            changed = False
+        candidate = candidate.strip().strip("'\"`")
+
+    return candidate.strip().strip("'\"`")
+
+
 class BearerTokenAuthenticator:
     """Validate explicitly configured bearer tokens without logging them."""
 
@@ -52,9 +86,9 @@ class BearerTokenAuthenticator:
         try:
             configured = json.loads(raw_value)
             tokens = {
-                token: AuthenticatedIdentity(
-                    subject=details["subject"],
-                    roles=frozenset(details["roles"]),
+                str(token).strip().strip("'\"`"): AuthenticatedIdentity(
+                    subject=str(details["subject"]).strip(),
+                    roles=frozenset(str(r).strip() for r in details["roles"]),
                     expires_at=datetime.fromisoformat(details["expires_at"]) if details.get("expires_at") else None,
                 )
                 for token, details in configured.items()
@@ -68,11 +102,16 @@ class BearerTokenAuthenticator:
     def authenticate(self, authorization: str | None) -> AuthenticatedIdentity:
         if not self._tokens:
             raise AuthenticationConfigurationError("Approval authentication is not configured.")
-        scheme, _, candidate = (authorization or "").partition(" ")
-        if scheme.lower() != "bearer" or not candidate:
+        if not authorization or not str(authorization).strip():
             raise AuthenticationError("Authentication credentials were not provided.")
+
+        candidate = extract_bearer_token(authorization)
+        if not candidate:
+            raise AuthenticationError("Authentication credentials were not provided.")
+
         for token, identity in self._tokens.items():
-            if hmac.compare_digest(token, candidate):
+            clean_token = token.strip().strip("'\"`")
+            if hmac.compare_digest(clean_token, candidate):
                 expiry = identity.expires_at.replace(tzinfo=UTC) if identity.expires_at and identity.expires_at.tzinfo is None else identity.expires_at
                 if expiry and expiry <= datetime.now(UTC):
                     raise AuthenticationError("Authentication credentials are invalid or expired.")

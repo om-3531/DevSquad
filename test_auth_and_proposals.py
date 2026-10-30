@@ -161,6 +161,28 @@ def test_expired_token_returns_401(auth_env: ProposalStore, eligible_proposal):
     assert resp.status_code == 401
 
 
+def test_bearer_token_formatting_variations_succeed(auth_env: ProposalStore, eligible_proposal):
+    client = TestClient(app)
+    valid_variations = [
+        f"Bearer {READER_TOKEN}",
+        f"Bearer  {READER_TOKEN} ",
+        f"Bearer \"{READER_TOKEN}\"",
+        f"Bearer '{READER_TOKEN}'",
+        f"Bearer Bearer {READER_TOKEN}",
+        f"bearer {READER_TOKEN}",
+        f"Bearer\t{READER_TOKEN}",
+        f"{READER_TOKEN}",
+    ]
+    for auth_header in valid_variations:
+        resp = client.get(
+            f"/proposals/{eligible_proposal.proposal_id}",
+            headers={"Authorization": auth_header},
+        )
+        assert resp.status_code == 200, f"Failed for header: {repr(auth_header)}"
+        assert resp.json()["status"] == "success"
+
+
+
 def test_client_supplied_identity_is_ignored(auth_env: ProposalStore, eligible_proposal):
     client = TestClient(app)
     # Trying to spoof subject or roles in query or headers without a valid approver token
@@ -459,3 +481,124 @@ def test_revision_check_rejects_missing_metadata(auth_env: ProposalStore):
 def test_revision_check_accepts_unchanged_remote_state(auth_env: ProposalStore, eligible_proposal):
     verified = auth_env.verify_revision(eligible_proposal.proposal_id, "a" * 40, "b" * 40)
     assert verified.status == PENDING_REVIEW
+
+
+# ---------------------------------------------------------------------------
+# 8. Proposal Rejection & Audit Endpoint Verification
+# ---------------------------------------------------------------------------
+
+def test_approver_can_reject_proposal(auth_env: ProposalStore, eligible_proposal, monkeypatch: pytest.MonkeyPatch):
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {APPROVER_TOKEN}"}
+    response = client.post(
+        f"/proposals/{eligible_proposal.proposal_id}/reject",
+        headers=headers,
+        json={"reason": "Candidate logic needs manual security review."},
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "success"
+    assert data["proposal"]["status"] == "REJECTED"
+
+    # Verify audit entry is recorded
+    audit = auth_env.audit_entries(eligible_proposal.proposal_id)
+    assert len(audit) == 1
+    assert "REJECTED" in audit[0]["action"]
+    assert audit[0]["actor_subject"] == "approver@devsquad.local"
+
+
+def test_reject_proposal_requires_approver_role(auth_env: ProposalStore, eligible_proposal):
+    client = TestClient(app)
+    # Reader token should be forbidden (403)
+    response_reader = client.post(
+        f"/proposals/{eligible_proposal.proposal_id}/reject",
+        headers={"Authorization": f"Bearer {READER_TOKEN}"},
+        json={"reason": "Reader trying to reject"},
+    )
+    assert response_reader.status_code == 403
+
+    # No token should be unauthorized (401)
+    response_anon = client.post(
+        f"/proposals/{eligible_proposal.proposal_id}/reject",
+        json={"reason": "Anonymous"},
+    )
+    assert response_anon.status_code == 401
+
+
+def test_resolved_proposal_cannot_be_re_resolved(auth_env: ProposalStore, eligible_proposal):
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {APPROVER_TOKEN}"}
+
+    # Reject once
+    res1 = client.post(f"/proposals/{eligible_proposal.proposal_id}/reject", headers=headers)
+    assert res1.status_code == 200
+
+    # Rejecting again should fail with 409
+    res2 = client.post(f"/proposals/{eligible_proposal.proposal_id}/reject", headers=headers)
+    assert res2.status_code == 409
+
+    # Approving a rejected proposal should fail with 409
+    res3 = client.post(
+        f"/proposals/{eligible_proposal.proposal_id}/approve",
+        headers=headers,
+        json={"content_digest": eligible_proposal.content_digest},
+    )
+    assert res3.status_code == 409
+
+
+def test_ineligible_proposal_cannot_be_approved_or_rejected(auth_env: ProposalStore):
+    ineligible = auth_env.create(
+        repository="om-3531/DevSquad",
+        issue_number=99,
+        target_branch="main",
+        target_path="backend/ineligible.py",
+        operation="modify",
+        proposed_content="broken code",
+        diff_preview={"reliable": True, "changed": True},
+        quality_gate_status="REQUEST_CHANGES",
+    )
+    assert ineligible.status == "NOT_ELIGIBLE"
+
+    client = TestClient(app)
+    headers = {"Authorization": f"Bearer {APPROVER_TOKEN}"}
+
+    # Approval attempt fails with 409
+    res_app = client.post(
+        f"/proposals/{ineligible.proposal_id}/approve",
+        headers=headers,
+        json={"content_digest": ineligible.content_digest},
+    )
+    assert res_app.status_code == 409
+    assert "not eligible" in res_app.json()["detail"].lower()
+
+    # Rejection attempt fails with 409
+    res_rej = client.post(
+        f"/proposals/{ineligible.proposal_id}/reject",
+        headers=headers,
+        json={"reason": "test"},
+    )
+    assert res_rej.status_code == 409
+
+
+def test_proposal_audit_endpoint(auth_env: ProposalStore, eligible_proposal):
+    client = TestClient(app)
+
+    # Approve to generate an audit record
+    client.post(
+        f"/proposals/{eligible_proposal.proposal_id}/approve",
+        headers={"Authorization": f"Bearer {APPROVER_TOKEN}"},
+        json={"content_digest": eligible_proposal.content_digest},
+    )
+
+    # Reader role can inspect audit records
+    res = client.get(
+        f"/proposals/{eligible_proposal.proposal_id}/audit",
+        headers={"Authorization": f"Bearer {READER_TOKEN}"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "success"
+    assert len(data["audit_events"]) == 1
+    assert data["audit_events"][0]["action"] == "APPROVED"
+    assert data["audit_events"][0]["actor_subject"] == "approver@devsquad.local"
+    assert "occurred_at" in data["audit_events"][0]

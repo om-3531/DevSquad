@@ -740,3 +740,218 @@ async def test_github_client_create_issue(monkeypatch):
     with pytest.raises(GitHubWritesDisabledError):
         await client.create_issue("om-3531/DevSquad", "Client issue")
 
+
+# ==============================================================================
+# Network retry, transient fault recovery, and reconciliation tests
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_get_issue_recovers_from_remote_protocol_error(monkeypatch):
+    """Verify first attempt failing with RemoteProtocolError retries and succeeds."""
+    client = GitHubClient()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, request=request, json={"id": 101, "title": "Recovered Issue"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    issue = await client.get_issue("om-3531/DevSquad", 1)
+    assert attempts == 2
+    assert issue["id"] == 101
+    assert issue["title"] == "Recovered Issue"
+
+
+@pytest.mark.asyncio
+async def test_get_issue_exhausts_retries_on_repeated_remote_protocol_error(monkeypatch):
+    """Verify repeated RemoteProtocolError stops after max_retries."""
+    client = GitHubClient()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise httpx.RemoteProtocolError("Connection dropped by remote server.")
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    with pytest.raises(httpx.RemoteProtocolError):
+        await client.get_issue("om-3531/DevSquad", 1)
+    assert attempts == 4  # Initial attempt + 3 retries
+
+
+@pytest.mark.asyncio
+async def test_get_issue_retries_on_503_service_unavailable(monkeypatch):
+    """Verify HTTP 503 is treated as retryable."""
+    client = GitHubClient()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        request = httpx.Request("GET", url)
+        if attempts == 1:
+            return httpx.Response(503, request=request, text="Service Unavailable")
+        return httpx.Response(200, request=request, json={"id": 202, "title": "Recovered from 503"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    issue = await client.get_issue("om-3531/DevSquad", 2)
+    assert attempts == 2
+    assert issue["id"] == 202
+
+
+@pytest.mark.asyncio
+async def test_get_issue_respects_retry_after_header(monkeypatch):
+    """Verify HTTP 429 parses Retry-After header and succeeds on next attempt."""
+    client = GitHubClient()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        request = httpx.Request("GET", url)
+        if attempts == 1:
+            return httpx.Response(429, request=request, headers={"Retry-After": "0.01"})
+        return httpx.Response(200, request=request, json={"id": 303, "title": "Recovered from 429"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    issue = await client.get_issue("om-3531/DevSquad", 3)
+    assert attempts == 2
+    assert issue["id"] == 303
+
+
+@pytest.mark.asyncio
+async def test_get_issue_does_not_retry_permanent_404_or_401(monkeypatch):
+    """Verify non-retryable 4xx client errors fail immediately on the first attempt."""
+    client = GitHubClient()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        request = httpx.Request("GET", url)
+        return httpx.Response(404, request=request)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        await client.get_issue("om-3531/DevSquad", 404)
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_create_branch_reconciles_on_transient_network_error(monkeypatch):
+    """Verify create_branch reconciles remote state if the branch exists after RemoteProtocolError."""
+    client = GitHubClient()
+    async def mock_get_sha(repo, branch="main"):
+        return "c" * 40
+
+    monkeypatch.setattr(client, "get_branch_sha", mock_get_sha)
+
+    async def mock_post(self, url, **kwargs):
+        raise httpx.RemoteProtocolError("Disconnected during ref creation")
+
+    async def mock_branch_exists(repo, branch):
+        assert branch == "devsquad/reconciled-branch"
+        return True
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+    monkeypatch.setattr(client, "branch_exists", mock_branch_exists)
+
+    result = await client.create_branch(
+        "om-3531/DevSquad",
+        "devsquad/reconciled-branch",
+        source_branch="main",
+        expected_source_sha="c" * 40,
+    )
+    assert result["ref"] == "refs/heads/devsquad/reconciled-branch"
+    assert result.get("reconciled") is True
+
+
+@pytest.mark.asyncio
+async def test_create_pull_request_reconciles_existing_on_422(monkeypatch):
+    """Verify create_pull_request reconciles existing PR on HTTP 422 duplicate."""
+    client = GitHubClient()
+    async def mock_get_sha(repo, branch):
+        return "d" * 40
+
+    monkeypatch.setattr(client, "get_branch_sha", mock_get_sha)
+
+    async def mock_post(self, url, **kwargs):
+        request = httpx.Request("POST", url)
+        return httpx.Response(422, request=request, json={"message": "A pull request already exists for this branch."})
+
+    async def mock_get_pr_by_head(repo, head):
+        return {"number": 99, "html_url": "https://github.com/om-3531/DevSquad/pull/99"}
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", mock_post)
+    monkeypatch.setattr(client, "get_pull_request_by_head", mock_get_pr_by_head)
+
+    pr = await client.create_pull_request(
+        repo="om-3531/DevSquad",
+        title="Test PR",
+        head="devsquad/my-branch",
+        base="main",
+        expected_head_sha="d" * 40,
+        expected_base_sha="d" * 40,
+    )
+    assert pr["number"] == 99
+    assert pr["html_url"] == "https://github.com/om-3531/DevSquad/pull/99"
+
+
+@pytest.mark.asyncio
+async def test_github_client_retries_on_read_error(monkeypatch):
+    """Verify GitHubClient._request_with_retry recovers from transient ReadError."""
+    client = GitHubClient()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadError("Connection reset by peer while reading HTTP response")
+        request = httpx.Request("GET", url)
+        return httpx.Response(200, request=request, json={"id": 1, "title": "Recovered Issue"})
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    issue = await client.get_issue("om-3531/DevSquad", 1)
+    assert issue["id"] == 1
+    assert issue["title"] == "Recovered Issue"
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_repository_service_get_file_retries_on_read_error(monkeypatch):
+    """Verify RepositoryService delegates to retry handler and handles ReadError."""
+    service = RepositoryService()
+    attempts = 0
+
+    async def mock_get(self, url, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ReadError("Premature EOF while reading")
+        request = httpx.Request("GET", url)
+        return httpx.Response(
+            200,
+            request=request,
+            json={"encoding": "base64", "content": "cHJpbnQoJ2hlbGxvJykK", "sha": "e" * 40},
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", mock_get)
+
+    file_data = await service.get_file("om-3531/DevSquad", "hello.py")
+    assert file_data["decoded_content"] == "print('hello')\n"
+    assert file_data["sha"] == "e" * 40
+    assert attempts == 2
+
+
+

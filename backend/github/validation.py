@@ -12,7 +12,7 @@ _SHA = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}", re.IGNORECASE)
 
 def validate_repository(value: str) -> str:
     if not isinstance(value, str) or not _REPOSITORY.fullmatch(value):
-        raise ValueError("Invalid GitHub repository identifier.")
+        raise ValueError("Invalid GitHub repository identifier (Invalid repo).")
     return value
 
 

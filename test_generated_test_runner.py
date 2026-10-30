@@ -96,6 +96,59 @@ def test_docker_permission_error_is_reported_as_an_environment_error(monkeypatch
     assert "PermissionError" in result["summary"]
 
 
+def test_docker_exit_code_125_is_reported_as_infrastructure_error(monkeypatch):
+    import subprocess
+
+    runner = GeneratedTestRunner()
+
+    def fake_run(command, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=125,
+            stdout="",
+            stderr="docker: Error response from daemon: container failed to initialize.",
+        )
+
+    monkeypatch.setattr(runner, "_ensure_image", lambda: None)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = runner.run_generated_tests(
+        proposed_code="def answer():\n    return 42\n",
+        generated_tests="def test_answer():\n    assert True\n",
+    )
+
+    assert result["status"] == "DOCKER_ERROR"
+    assert result["passed"] is False
+    assert result["infrastructure_error"] is True
+    assert result["return_code"] == 125
+
+
+def test_docker_daemon_error_marker_reported_as_infrastructure_error(monkeypatch):
+    import subprocess
+
+    runner = GeneratedTestRunner()
+
+    def fake_run(command, *args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=1,
+            stdout="",
+            stderr="error: open //./pipe/docker: The system cannot find the file specified.",
+        )
+
+    monkeypatch.setattr(runner, "_ensure_image", lambda: None)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    result = runner.run_generated_tests(
+        proposed_code="def answer():\n    return 42\n",
+        generated_tests="def test_answer():\n    assert True\n",
+    )
+
+    assert result["status"] == "DOCKER_ERROR"
+    assert result["passed"] is False
+    assert result["infrastructure_error"] is True
+
+
 def test_empty_code_is_not_run():
     runner = GeneratedTestRunner()
 

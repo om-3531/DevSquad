@@ -7,8 +7,8 @@ from backend.github.validation import validate_file_path, validate_git_ref, vali
 
 
 class RepositoryService:
-    def __init__(self):
-        self.github = GitHubClient()
+    def __init__(self, github_client: GitHubClient | None = None):
+        self.github = github_client or GitHubClient()
 
     async def get_branch_sha(self, repo: str, branch: str) -> str:
         """Return the immutable commit SHA used to build a reviewed proposal."""
@@ -44,13 +44,11 @@ class RepositoryService:
             f"?ref={branch}"
         )
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                url,
-                headers=self.github.headers,
-            )
-
-        response.raise_for_status()
+        response = await self.github._request_with_retry(
+            "GET",
+            url,
+            timeout=15.0,
+        )
         data = response.json()
 
         if data.get("encoding") == "base64" and data.get("content"):
@@ -67,13 +65,7 @@ class RepositoryService:
         validate_repository(repo)
         url = f"{self.github.base_url}/repos/{repo}"
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                url,
-                headers=self.github.headers,
-            )
-
-        response.raise_for_status()
+        response = await self.github._request_with_retry("GET", url, timeout=15.0)
         data = response.json()
 
         return {
@@ -95,13 +87,7 @@ class RepositoryService:
             "?recursive=1"
         )
 
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            response = await client.get(
-                url,
-                headers=self.github.headers,
-            )
-
-        response.raise_for_status()
+        response = await self.github._request_with_retry("GET", url, timeout=15.0)
         data = response.json()
 
         ignored_prefixes = (

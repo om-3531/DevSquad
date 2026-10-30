@@ -1,0 +1,113 @@
+warning: in the working copy of 'README.md', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/agents/coder.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/agents/llm_text.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/agents/planner.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/agents/reviewer.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/agents/tester.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/auth.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/config.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/github/issues.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/github/validation.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/proposals.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'backend/workflows.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'candidate-requirements.txt', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/package.json', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/App.css', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/App.jsx', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/proposalApproval.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/src/proposalApproval.test.mjs', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'frontend/vite.config.js', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'test_auth_and_proposals.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'test_rate_limit_handling.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'test_workflow_diagnosis_and_retry.py', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'test_workflow_history.py', LF will be replaced by CRLF the next time Git touches it
+[1mdiff --git a/README.md b/README.md[m
+[1mindex bcf480e..3bbc5eb 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -120,25 +120,39 @@[m [mDevSquad/[m
+ │   │   ├── generated_test_runner.py# Isolated Docker container runner[m
+ │   │   └── llm_text.py             # Markdown fence parsing[m
+ │   ├── github/[m
+[31m-│   │   ├── client.py               # GitHub API client (branches, commits, PRs)[m
+[31m-│   │   ├── issues.py               # Issue fetching service[m
+[31m-│   │   └── repository.py           # Repository metadata & contents service[m
+[32m+[m[32m│   │   ├── client.py               # Resilient GitHub API client (retry, reconciliation)[m
+[32m+[m[32m│   │   ├── issues.py               # Issue fetching & creation service[m
+[32m+[m[32m│   │   ├── repository.py           # Repository metadata & contents service[m
+[32m+[m[32m│   │   ├── validation.py           # Git ref and path safety validation[m
+[32m+[m[32m│   │   └── write_orchestrator.py   # Guarded write orchestrator[m
+[32m+[m[32m│   ├── auth.py                     # Role-based access control & Bearer authenticator[m
+ │   ├── config.py                   # Configuration and settings loader[m
+[32m+[m[32m│   ├── patch_validator.py          # Multi-file patch validation & traversal protection[m
+[32m+[m[32m│   ├── proposals.py                # Proposal persistence, digests & human approval[m
+ │   ├── schemas.py                  # Pydantic input/output models[m
+[32m+[m[32m│   ├── workflows.py                # Workflow execution store, stages & history events[m
+ │   └── main.py                     # FastAPI application endpoints[m
+ ├── frontend/[m
+ │   ├── src/[m
+ │   │   ├── App.jsx                 # Dashboard UI component[m
+ │   │   ├── App.css                 # Responsive dashboard styling[m
+[32m+[m[32m│   │   ├── proposalApproval.js     # Human approval & error formatting utilities[m
+[32m+[m[32m│   │   ├── proposalApproval.test.mjs# Frontend node:test suite[m
+ │   │   └── main.jsx                # Application root[m
+ │   ├── package.json                # Frontend dependencies[m
+ │   └── vite.config.js              # Vite configuration[m
+ ├── Dockerfile.test                 # Isolated test runner container image[m
+[32m+[m[32m├── candidate-requirements.txt      # Hardened dependencies for sandbox runner[m
+ ├── requirements.txt                # Python backend dependencies[m
+ ├── pytest.ini                      # Pytest configuration[m
+[31m-├── test_workflow.py                # End-to-end mocked workflow tests[m
+[32m+[m[32m├── test_auth_and_proposals.py      # RBAC, approval, and proposal test suite[m
+ ├── test_coder_agent.py             # Coder agent unit tests[m
+ ├── test_generated_test_runner.py   # Container execution tests[m
+[32m+[m[32m├── test_github_client.py           # GitHub client & transient error retry tests[m
+[32m+[m[32m├── test_review_and_test_regression.py # Quality gate & terminal state regressions[m
+[32m+[m[32m├── test_workflow.py                # End-to-end mocked workflow tests[m
+[32m+[m[32m├── test_workflow_history.py        # History, pagination, and metrics tests[m
+[32m+[m[32m├── test_write_orchestrator.py      # Guarded branch/commit/PR orchestration tests[m
+ ├── .env.example                    # Template for required environment variables[m
+ └── README.md                       # Project documentation[m
+ ```[m
+[1mdiff --git a/backend/agents/coder.py b/backend/agents/coder.py[m
+[1mindex 7819720..47060f6 100644[m
+[1m--- a/backend/agents/coder.py[m
+[1m+++ b/backend/agents/coder.py[m
+[36m@@ -8,6 +8,7 @@[m [mfrom groq import Groq, RateLimitError[m
+ [m
+ from backend.config import settings[m
+ from backend.agents.llm_text import ([m
+[32m+[m[32m    execute_chat_completion,[m
+     extract_retry_after,[m
+     get_model_extra_kwargs,[m
+     is_daily_limit_error,[m
+[36m@@ -26,8 +27,10 @@[m [mlogger = logging.getLogger(__name__)[m
+ class CoderAgent:[m
+     __test__ = False[m
+ [m
+[31m-    def __init__(self):[m
+[32m+[m[32m    def __init__(self, fallback_model: str | None = None):[m
+         self._model = None[m
+[32m+[m[32m        self._fallback_model = fallback_model or settings.LLM_FALLBACK_MODEL[m
+[32m+[m[32m        self.on_fallback = None[m
+         api_key = settings.LLM_API_KEY or os.getenv("LLM_API_KEY")[m
+ [m
+         if not api_key:[m
+[36m@@ -45,6 +48,15 @@[m [mclass CoderAgent:[m
+     def model(self, value: str | None):[m
+         self._model = value[m
+ [m
+[32m+[m[32m    @property[m
+[32m+[m[32m    def fallback_model(self) -> str | None:[m
+[32m+[m[32m        return getattr(self, "_fallback_model", None)[m
+[32m+[m
+[32m+[m[32m    @fallback_model.setter[m
+[32m+[m[32m    def fallback_model(self, value: str | None):[m
+[32m+[m[32m        self._fallback_model = value[m
+[32m+[m[32m        self._model = value[m
+[32m+[m
+     def generate_code([m
+         self,[m
+         task: str,[m
+[36m@@ -71,7 +83,15 @@[m [mclass CoderAgent:[m
+                 f"- OPERATION IS 'MODIFY' FOR '{file_path}'. You MUST PRESERVE

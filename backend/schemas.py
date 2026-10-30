@@ -73,3 +73,7 @@ class ProposalApprovalRequest(BaseModel):
 
 class DiagnoseRequest(BaseModel):
     force_refresh: bool = False
+
+
+class ProposalRejectRequest(BaseModel):
+    reason: Optional[str] = None

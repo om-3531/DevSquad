@@ -22,6 +22,7 @@ WRITE_IN_PROGRESS = "WRITE_IN_PROGRESS"
 COMMITTED = "COMMITTED"
 PR_CREATED = "PR_CREATED"
 WRITE_FAILED = "WRITE_FAILED"
+REJECTED = "REJECTED"
 
 
 class ProposalStorageError(RuntimeError):
@@ -271,7 +272,7 @@ class ProposalStore:
                     raise TimeoutError(proposal_id)
                 if proposal.status == EXPIRED:
                     raise TimeoutError(proposal_id)
-                if proposal.status == APPROVED:
+                if proposal.status in (APPROVED, REJECTED):
                     raise FileExistsError(proposal_id)
                 if proposal.status != PENDING_REVIEW:
                     raise ValueError("Proposal is not eligible for approval.")
@@ -292,6 +293,45 @@ class ProposalStore:
             raise
         except sqlite3.Error as error:
             raise ProposalStorageError("Proposal storage is unavailable.") from error
+
+    def reject(self, proposal_id: str, rejected_by: str, reason: str = "", now: datetime | None = None) -> Proposal:
+        """Atomically reject a proposal that is pending review and log the rejection."""
+        current_time = self._now(now)
+        if not isinstance(rejected_by, str) or not rejected_by.strip() or len(rejected_by) > 256 or any(ord(character) < 32 for character in rejected_by):
+            raise ValueError("Rejection identity is invalid.")
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute("SELECT * FROM proposals WHERE proposal_id = ?", (proposal_id,)).fetchone()
+                if row is None:
+                    raise KeyError(proposal_id)
+                proposal = self._from_row(row)
+                if proposal.status == PENDING_REVIEW and proposal.expires_at <= current_time:
+                    connection.execute("UPDATE proposals SET status = ? WHERE proposal_id = ? AND status = ?", (EXPIRED, proposal_id, PENDING_REVIEW))
+                    connection.commit()
+                    raise TimeoutError(proposal_id)
+                if proposal.status == EXPIRED:
+                    raise TimeoutError(proposal_id)
+                if proposal.status in (APPROVED, REJECTED):
+                    raise FileExistsError(proposal_id)
+                if proposal.status != PENDING_REVIEW:
+                    raise ValueError("Proposal is not eligible for rejection.")
+                result = connection.execute("UPDATE proposals SET status = ? WHERE proposal_id = ? AND status = ?", (REJECTED, proposal_id, PENDING_REVIEW))
+                if result.rowcount != 1:
+                    raise FileExistsError(proposal_id)
+                action_text = f"REJECTED: {reason[:40]}" if reason else "REJECTED"
+                connection.execute(
+                    "INSERT INTO approval_audit (proposal_id, actor_subject, action, content_digest, occurred_at) VALUES (?, ?, ?, ?, ?)",
+                    (proposal_id, rejected_by, action_text[:64], proposal.content_digest, current_time.isoformat()),
+                )
+                connection.commit()
+                proposal.status = REJECTED
+                return proposal
+        except (KeyError, TimeoutError, FileExistsError, ValueError):
+            raise
+        except sqlite3.Error as error:
+            raise ProposalStorageError("Proposal storage is unavailable.") from error
+
 
     def verify_revision(self, proposal_id: str, base_commit_sha: str | None, target_file_blob_sha: str | None) -> Proposal:
         """Atomically reject a proposal when a read-only remote revision check differs."""

@@ -21,9 +21,11 @@ from backend.schemas import (
     DiagnoseRequest,
     IssueRequest,
     ProposalApprovalRequest,
+    ProposalRejectRequest,
     is_safe_relative_path,
 )
 from backend.diff_preview import build_diff_preview
+from backend.patch_validator import validate_candidate_patch
 from backend.proposals import (
     ProposalStorageError,
     ProposalStore,
@@ -76,11 +78,14 @@ from backend.workflows import (
     EVENT_REVIEWER_COMPLETED,
     EVENT_REVIEWER_FAILED,
     EVENT_PROPOSAL_CREATED,
+    EVENT_PROPOSAL_APPROVED,
+    EVENT_PROPOSAL_REJECTED,
     EVENT_WORKFLOW_SUCCEEDED,
     EVENT_WORKFLOW_FAILED,
     EVENT_DIAGNOSIS_REQUESTED,
     EVENT_DIAGNOSIS_COMPLETED,
     EVENT_WORKFLOW_RETRIED,
+    EVENT_MODEL_FALLBACK_TRIGGERED,
 )
 import uuid
 from backend.agents.planner import PlannerAgent
@@ -147,10 +152,20 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1):(517\d|518\d|3000)$",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 issue_service = IssueService()
@@ -387,11 +402,97 @@ async def approve_proposal(proposal_id: str, request: ProposalApprovalRequest, i
     except ProposalStorageError as error:
         raise HTTPException(status_code=503, detail="Proposal storage is temporarily unavailable.") from error
 
+    try:
+        wf = workflow_store.get_workflow_by_proposal_id(proposal_id)
+        if wf:
+            workflow_store.record_event(
+                wf.workflow_id,
+                event_type=EVENT_PROPOSAL_APPROVED,
+                stage=wf.stage,
+                message=f"Proposal {proposal_id} approved by {identity.subject}.",
+            )
+    except Exception as exc:
+        logger.warning("Failed to record workflow event for proposal approval: %s", exc)
+
     return {
         "status": "success",
         "message": "Approval recorded. No branch, commit, or pull request was created.",
         "proposal": proposal.public_dict(),
     }
+
+
+@app.post("/proposals/{proposal_id}/reject")
+async def reject_proposal(
+    proposal_id: str,
+    request: Optional[ProposalRejectRequest] = Body(default=None),
+    identity: AuthenticatedIdentity = Depends(require_proposal_role(PROPOSAL_APPROVER)),
+):
+    retry_after = approval_rate_limiter.check(identity.subject)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many approval attempts. Please try again later.",
+            headers={"Retry-After": str(retry_after)},
+        )
+    reason = request.reason.strip() if (request and request.reason) else ""
+    try:
+        proposal = proposal_store.reject(proposal_id, rejected_by=identity.subject, reason=reason)
+    except KeyError as error:
+        raise HTTPException(status_code=404, detail="Proposal not found.") from error
+    except TimeoutError as error:
+        proposal_store.record_audit(proposal_id, identity.subject, "REJECTED_EXPIRED")
+        raise HTTPException(status_code=410, detail="Proposal expired; run a new dry-run workflow.") from error
+    except FileExistsError as error:
+        proposal_store.record_audit(proposal_id, identity.subject, "REJECTED_ALREADY_RESOLVED")
+        raise HTTPException(status_code=409, detail="Proposal has already been resolved.") from error
+    except ValueError as error:
+        proposal_store.record_audit(proposal_id, identity.subject, "REJECTED_NOT_ELIGIBLE")
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except ProposalStorageError as error:
+        raise HTTPException(status_code=503, detail="Proposal storage is temporarily unavailable.") from error
+
+    try:
+        wf = workflow_store.get_workflow_by_proposal_id(proposal_id)
+        if wf:
+            msg = f"Proposal {proposal_id} rejected by {identity.subject}"
+            if reason:
+                msg += f": {reason}"
+            workflow_store.record_event(
+                wf.workflow_id,
+                event_type=EVENT_PROPOSAL_REJECTED,
+                stage=wf.stage,
+                message=msg,
+            )
+    except Exception as exc:
+        logger.warning("Failed to record workflow event for proposal rejection: %s", exc)
+
+    return {
+        "status": "success",
+        "message": "Proposal rejection recorded.",
+        "proposal": proposal.public_dict(),
+    }
+
+
+@app.get("/proposals/{proposal_id}/audit")
+async def get_proposal_audit(
+    proposal_id: str,
+    _: AuthenticatedIdentity = Depends(require_proposal_role(PROPOSAL_READER)),
+):
+    try:
+        proposal = proposal_store.get(proposal_id)
+        if proposal is None:
+            raise HTTPException(status_code=404, detail="Proposal not found.")
+        entries = proposal_store.audit_entries(proposal_id)
+        return {
+            "status": "success",
+            "proposal_id": proposal_id,
+            "audit_events": entries,
+        }
+    except HTTPException:
+        raise
+    except ProposalStorageError as error:
+        raise HTTPException(status_code=503, detail="Proposal storage is temporarily unavailable.") from error
+
 
 
 @app.post("/proposals/{proposal_id}/write")
@@ -676,6 +777,36 @@ async def execute_agent_workflow_internal(
     workflow_id = str(uuid.uuid4())
     current_stage = STAGE_INITIALIZING
     active_agent = None
+    fallback_triggered = False
+    model_used = settings.get_model()
+    fallback_reason = None
+
+    def on_model_fallback(from_model: str, to_model: str, reason: str):
+        nonlocal fallback_triggered, model_used, fallback_reason
+        fallback_triggered = True
+        model_used = to_model
+        fallback_reason = reason
+        planner_agent.model = to_model
+        coder_agent.model = to_model
+        reviewer_agent.model = to_model
+        tester_agent.model = to_model
+        try:
+            workflow_store.record_event(
+                workflow_id,
+                event_type=EVENT_MODEL_FALLBACK_TRIGGERED,
+                stage=current_stage,
+                message=(
+                    f"AI rate limit encountered for model '{from_model}'. "
+                    f"Automatically switched to fallback model '{to_model}' ({reason})."
+                ),
+            )
+        except Exception as exc:
+            logger.warning("Failed to record model fallback event: %s", exc)
+
+    planner_agent.on_fallback = on_model_fallback
+    coder_agent.on_fallback = on_model_fallback
+    reviewer_agent.on_fallback = on_model_fallback
+    tester_agent.on_fallback = on_model_fallback
 
     try:
         try:
@@ -906,6 +1037,78 @@ async def execute_agent_workflow_internal(
         }
 
         for attempt in range(max_retries + 1):
+            # 1. Safe patch validation before review or test execution
+            patch_validation = validate_candidate_patch(
+                target_path=target_path or "",
+                proposed_code=proposed_code,
+                existing_code=existing_code,
+                operation=operation,
+            )
+            if not patch_validation.is_valid:
+                quality_status = "PATCH_VALIDATION_FAILED"
+                try:
+                    workflow_store.record_event(
+                        workflow_id,
+                        event_type=EVENT_CODE_GENERATION_FAILED,
+                        stage=STAGE_CODING,
+                        message=f"Candidate patch rejected: {'; '.join(patch_validation.issues)}",
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to record patch validation rejection: %s", exc)
+
+                if attempt < max_retries:
+                    current_stage = STAGE_CODING
+                    active_agent = "coder"
+                    try:
+                        workflow_store.update_workflow(
+                            workflow_id,
+                            stage=STAGE_CODING,
+                            coder_status=AGENT_RUNNING,
+                        )
+                        workflow_store.record_event(
+                            workflow_id,
+                            event_type=EVENT_CODE_GENERATION_STARTED,
+                            stage=STAGE_CODING,
+                            message=f"Coder revising code after patch validation rejection (attempt {attempt + 1}).",
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to record coder revision start: %s", exc)
+
+                    validation_feedback = (
+                        "Candidate patch failed architectural and safety validation:\n"
+                        + "\n".join(f"- {issue}" for issue in patch_validation.issues)
+                        + "\nRecommended fixes:\n"
+                        + "\n".join(f"- {fix}" for fix in patch_validation.fixes)
+                    )
+                    proposed_code = coder_agent.improve_code(
+                        task=task,
+                        implementation_plan=str(plan),
+                        previous_code=proposed_code,
+                        reviewer_feedback=validation_feedback,
+                        existing_code=existing_code,
+                        operation=operation,
+                        file_path=target_path or "",
+                        acceptance_criteria=acceptance_criteria,
+                    )
+                    correction_attempts += 1
+
+                    try:
+                        workflow_store.update_workflow(
+                            workflow_id,
+                            coder_status=AGENT_COMPLETED,
+                        )
+                        workflow_store.record_event(
+                            workflow_id,
+                            event_type=EVENT_CODE_GENERATION_COMPLETED,
+                            stage=STAGE_CODING,
+                            message=f"Coder revision completed (attempt {attempt + 1}).",
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to record coder revision completion: %s", exc)
+
+                    continue
+                break
+
             current_stage = STAGE_REVIEWING
             active_agent = "reviewer"
             try:
@@ -964,11 +1167,34 @@ async def execute_agent_workflow_internal(
                     except Exception as exc:
                         logger.warning("Failed to record coder revision start: %s", exc)
 
+                    prev_diff_preview = build_diff_preview(
+                        path=target_path or "candidate.py",
+                        operation=operation,
+                        proposed_content=proposed_code,
+                        original_content=original_content,
+                        original_content_available=original_content_available,
+                        unavailable_reason=original_content_unavailable_reason,
+                    )
+                    diff_text = prev_diff_preview.get("diff", "")
+                    rich_review_feedback = (
+                        f"Reviewer requested changes (attempt {attempt + 1}). "
+                        "Carefully address every issue and apply every fix specified below.\n\n"
+                        f"{review}"
+                    )
+                    if diff_text:
+                        rich_review_feedback += f"\n\nPrevious Candidate Diff:\n{diff_text}"
+                    rich_review_feedback += (
+                        "\n\nArchitecture & Delegation Guidance:\n"
+                        "- Do not create separate HTTP clients (e.g., httpx.AsyncClient) or raw HTTP POSTs when a service wraps a client.\n"
+                        "- Delegate directly to the existing client's methods (e.g. await self.github.create_issue(...)) so write capability guards and client configuration are preserved.\n"
+                        "- If top-level wrappers like create_test_issue are used, pass the injected client through to the service."
+                    )
+
                     proposed_code = coder_agent.improve_code(
                         task=task,
                         implementation_plan=str(plan),
                         previous_code=proposed_code,
-                        reviewer_feedback=review,
+                        reviewer_feedback=rich_review_feedback,
                         existing_code=existing_code,
                         operation=operation,
                         file_path=target_path or "",
@@ -1064,6 +1290,7 @@ async def execute_agent_workflow_internal(
             test_execution = generated_test_runner.run_generated_tests(
                 proposed_code=proposed_code,
                 generated_tests=test_suggestions,
+                target_path=target_path or "",
             )
             if test_execution["passed"]:
                 quality_status = "REVIEW_APPROVED_GENERATED_TESTS_PASSED"
@@ -1082,7 +1309,7 @@ async def execute_agent_workflow_internal(
                     logger.warning("Failed to record test completion: %s", exc)
                 break
 
-            if test_execution.get("status") == "DOCKER_ERROR":
+            if test_execution.get("status") == "DOCKER_ERROR" or test_execution.get("infrastructure_error"):
                 quality_status = "TEST_ENVIRONMENT_ERROR"
                 try:
                     workflow_store.update_workflow(
@@ -1100,12 +1327,14 @@ async def execute_agent_workflow_internal(
                 break
 
             quality_status = "GENERATED_TESTS_FAILED"
+            failed_test_list = test_execution.get("failed_tests", [])
+            failed_test_str = f" ({', '.join(failed_test_list)})" if failed_test_list else ""
             try:
                 workflow_store.record_event(
                     workflow_id,
                     event_type=EVENT_TESTS_FAILED,
                     stage=STAGE_TESTING,
-                    message=f"Generated tests failed: {test_execution.get('summary', 'Test failure')}",
+                    message=f"Generated tests failed{failed_test_str}: {test_execution.get('summary', 'Test failure')}",
                 )
             except Exception as exc:
                 logger.warning("Failed to record test failure: %s", exc)
@@ -1128,15 +1357,44 @@ async def execute_agent_workflow_internal(
                 except Exception as exc:
                     logger.warning("Failed to record coder revision after test failure: %s", exc)
 
+                prev_diff_preview = build_diff_preview(
+                    path=target_path or "candidate.py",
+                    operation=operation,
+                    proposed_content=proposed_code,
+                    original_content=original_content,
+                    original_content_available=original_content_available,
+                    unavailable_reason=original_content_unavailable_reason,
+                )
+                diff_text = prev_diff_preview.get("diff", "")
+
+                feedback_parts = [
+                    f"Generated tests failed (attempt {attempt + 1}). Fix the proposed code so the isolated pytest suite passes."
+                ]
+                if failed_test_list:
+                    feedback_parts.append("Failed test names:\n" + "\n".join(f"- {t}" for t in failed_test_list))
+                if test_execution.get("summary"):
+                    feedback_parts.append(f"Test summary:\n{test_execution.get('summary')}")
+                if test_execution.get("tracebacks"):
+                    feedback_parts.append(f"Failure tracebacks:\n{test_execution.get('tracebacks')}")
+                if review:
+                    feedback_parts.append(f"Previous Reviewer Feedback:\n{review}")
+                if diff_text:
+                    feedback_parts.append(f"Previous Candidate Diff:\n{diff_text}")
+                feedback_parts.append(
+                    "Architecture Preservation Instructions:\n"
+                    "- Preserve all existing classes, methods, and architectural imports (e.g. GitHubClient, validate_repository).\n"
+                    "- Do not recreate simplified or dummy implementations of existing project components.\n"
+                    "- Do not import builtins or reference builtins.validate_repository; use validate_repository(repo) from backend.github.validation.\n"
+                    "- Ensure invalid repository names are rejected by calling validate_repository(repo).\n"
+                    "- Delegate directly to self.github.create_issue(...) rather than creating a separate httpx.AsyncClient.\n"
+                    "- Implement the exact missing behavior cleanly so tests pass."
+                )
+
                 proposed_code = coder_agent.improve_code(
                     task=task,
                     implementation_plan=str(plan),
                     previous_code=proposed_code,
-                    reviewer_feedback=(
-                        "Generated tests failed. Fix the proposed code "
-                        "so the isolated pytest suite passes.\n"
-                        f"{test_execution.get('summary', '')}"
-                    ),
+                    reviewer_feedback="\n\n".join(feedback_parts),
                     existing_code=existing_code,
                     operation=operation,
                     file_path=target_path or "",
@@ -1218,11 +1476,15 @@ async def execute_agent_workflow_internal(
                 f"Test environment error: {test_execution.get('summary', 'Docker error')}. "
                 "Ensure Docker Desktop is running."
             )
+        elif quality_status == "PATCH_VALIDATION_FAILED":
+            test_execution["status"] = "PATCH_VALIDATION_FAILED"
+            next_action = "Candidate patch failed safety and architectural validation. Manual review required."
         elif quality_status == "GENERATED_TESTS_FAILED":
             test_execution["status"] = "GENERATED_TESTS_FAILED"
             next_action = "Generated tests failed after retries. Manual review required."
         else:
             next_action = "Manual review required."
+
 
         current_stage = STAGE_FINALIZING
         active_agent = None
@@ -1261,7 +1523,7 @@ async def execute_agent_workflow_internal(
                     message="Workflow execution succeeded; quality gates passed.",
                 )
             else:
-                gate_failed_stage = STAGE_TESTING if "TESTS" in quality_status else STAGE_REVIEWING
+                gate_failed_stage = STAGE_TESTING if "TEST" in quality_status else STAGE_REVIEWING
                 workflow_store.update_workflow(
                     workflow_id,
                     status=STATUS_FAILED,
@@ -1313,6 +1575,9 @@ async def execute_agent_workflow_internal(
             "proposal": proposal.public_dict(),
             "acceptance_criteria": acceptance_criteria,
             "retry_of_workflow_id": retry_of_workflow_id,
+            "fallback_triggered": fallback_triggered,
+            "model_used": model_used,
+            "fallback_reason": fallback_reason,
         }
 
     except HTTPException as error:
@@ -1322,6 +1587,11 @@ async def execute_agent_workflow_internal(
         exc = github_http_error(error)
         _record_workflow_failure(workflow_id, str(exc.detail), current_stage, active_agent)
         raise exc from error
+    except (httpx.RequestError, httpx.NetworkError) as error:
+        err_msg = str(error).strip() or "Connection closed or reset prematurely by remote host."
+        detail = f"Workflow failed: Network communication error ({type(error).__name__}): {err_msg}. Check GitHub connectivity."
+        _record_workflow_failure(workflow_id, detail, current_stage, active_agent)
+        raise HTTPException(status_code=502, detail=detail) from error
     except RateLimitError as error:
         exc = handle_ai_rate_limit(error)
         _record_workflow_failure(workflow_id, str(exc.detail), current_stage, active_agent)
@@ -1331,12 +1601,23 @@ async def execute_agent_workflow_internal(
             exc = handle_ai_rate_limit(error)
             _record_workflow_failure(workflow_id, str(exc.detail), current_stage, active_agent)
             raise exc from error
-        sanitized = sanitize_secret(str(error))
-        _record_workflow_failure(workflow_id, f"{type(error).__name__}: {sanitized}", current_stage, active_agent)
+        err_text = str(error).strip()
+        sanitized = sanitize_secret(err_text) if err_text else "Internal processing failure."
+        detail = f"Workflow failed: {type(error).__name__}: {sanitized}"
+        _record_workflow_failure(workflow_id, detail, current_stage, active_agent)
         raise HTTPException(
             status_code=500,
-            detail=f"Workflow failed: {type(error).__name__}: {sanitized}",
+            detail=detail,
         ) from error
+    finally:
+        planner_agent.on_fallback = None
+        coder_agent.on_fallback = None
+        reviewer_agent.on_fallback = None
+        tester_agent.on_fallback = None
+        planner_agent.model = None
+        coder_agent.model = None
+        reviewer_agent.model = None
+        tester_agent.model = None
 
 
 @app.post("/agents/workflow")
@@ -1585,7 +1866,11 @@ async def create_fix_proposal_from_diagnosis(
 
     return {
         "status": "success",
-        "message": "Candidate patch created as a pending proposal requiring human review.",
+        "message": (
+            "Diagnostic fix stored as a NOT_ELIGIBLE candidate. "
+            "It did not pass reviewer and isolated-test quality gates and cannot be approved "
+            "until a verified dry-run workflow succeeds."
+        ),
         "proposal_id": proposal.proposal_id,
         "proposal": proposal.public_dict(),
         "diff_preview": diff_preview,

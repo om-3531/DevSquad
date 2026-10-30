@@ -1,5 +1,34 @@
-export function canRecordApproval(status, confirmed) {
+export function formatApiDetail(detail) {
+  if (!detail) return ''
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) {
+    return detail
+      .map((item) => {
+        if (!item) return ''
+        if (typeof item === 'string') return item
+        return item.msg || item.message || ''
+      })
+      .filter(Boolean)
+      .join('; ')
+  }
+  if (typeof detail === 'object' && (detail.msg || detail.message)) {
+    return detail.msg || detail.message
+  }
+  return ''
+}
+
+export function canRecordApproval(status, confirmed, token = null) {
+  if (token !== null) {
+    return status === 'PENDING_REVIEW' && confirmed && Boolean(token && token.trim())
+  }
   return status === 'PENDING_REVIEW' && confirmed
+}
+
+export function canRecordRejection(status, token = null) {
+  if (token !== null) {
+    return status === 'PENDING_REVIEW' && Boolean(token && token.trim())
+  }
+  return status === 'PENDING_REVIEW'
 }
 
 export function approvalStatusLabel(status) {
@@ -13,14 +42,21 @@ export function formatApprovalError(status, detail) {
   if (status === 403) {
     return 'Permission denied (403): Your authenticated token does not have the "proposal_approver" role.'
   }
+  if (status === 409) {
+    return formatApiDetail(detail) || 'Proposal is not eligible for this action.'
+  }
+  if (status === 410) {
+    return 'Proposal has expired (410): Run a new verified dry-run workflow.'
+  }
   if (status === 429) {
     return 'Rate limit exceeded (429): Too many approval attempts. Please wait before retrying.'
   }
   if (status === 503) {
     return 'Service unavailable (503): Proposal approval authentication is not configured on the backend.'
   }
-  return detail || 'Approval could not be recorded.'
+  return formatApiDetail(detail) || 'Approval could not be recorded.'
 }
+
 export function canInitiateWrite(status) {
   return status === 'APPROVED' || status === 'WRITE_FAILED'
 }
@@ -36,7 +72,7 @@ export function formatWriteError(status, detail) {
     return 'Permission denied (403): Your token does not have the "proposal_approver" role.'
   }
   if (status === 409) {
-    return detail || 'Proposal is stale or not eligible for writing. Run a new dry-run workflow.'
+    return formatApiDetail(detail) || 'Proposal is stale or not eligible for writing. Run a new dry-run workflow.'
   }
   if (status === 429) {
     return 'Rate limit exceeded (429): Too many write attempts. Please wait before retrying.'
@@ -44,5 +80,5 @@ export function formatWriteError(status, detail) {
   if (status === 502) {
     return 'GitHub write workflow failed safely. Check server logs.'
   }
-  return detail || 'GitHub write operation could not be completed.'
+  return formatApiDetail(detail) || 'GitHub write operation could not be completed.'
 }

@@ -8,6 +8,7 @@ from groq import Groq, RateLimitError
 
 from backend.config import settings
 from backend.agents.llm_text import (
+    execute_chat_completion,
     extract_retry_after,
     get_model_extra_kwargs,
     is_daily_limit_error,
@@ -24,8 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class PlannerAgent:
-    def __init__(self):
+    def __init__(self, fallback_model: str | None = None):
         self._model = None
+        self._fallback_model = fallback_model or settings.LLM_FALLBACK_MODEL
+        self.on_fallback = None
         api_key = settings.LLM_API_KEY or os.getenv("LLM_API_KEY")
 
         if not api_key:
@@ -42,6 +45,14 @@ class PlannerAgent:
     @model.setter
     def model(self, value: str | None):
         self._model = value
+
+    @property
+    def fallback_model(self) -> str | None:
+        return getattr(self, "_fallback_model", None)
+
+    @fallback_model.setter
+    def fallback_model(self, value: str | None):
+        self._fallback_model = value
 
     def create_plan(
         self,
@@ -84,73 +95,46 @@ Instructions:
 - Provide clear, measurable acceptance criteria.
 - Do not claim code was changed or tested.
 """
-        max_attempts = 2
-        base_backoff = 2.0
-        max_backoff = 10.0
-
         extra_kwargs = get_model_extra_kwargs(self.model)
 
-        for attempt in range(max_attempts):
-            try:
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "Return concise, valid JSON only.",
-                        },
-                        {"role": "user", "content": prompt},
-                    ],
-                    temperature=0.1,
-                    max_tokens=500,
-                    **extra_kwargs,
-                )
+        def _on_switch(prev, next_m, reason):
+            self.model = next_m
+            if getattr(self, "on_fallback", None):
+                self.on_fallback(prev, next_m, reason)
 
-                choice = response.choices[0]
-                content = strip_code_fences(
-                    choice.message.content or ""
-                )
-                safe_log_completion(logger, self.model, getattr(choice, "finish_reason", None), content, getattr(response, "usage", None))
+        response, used_model = execute_chat_completion(
+            client=self.client,
+            messages=[
+                {
+                    "role": "system",
+                    "content": "Return concise, valid JSON only.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            primary_model=self.model,
+            fallback_model=self.fallback_model,
+            temperature=0.1,
+            max_tokens=500,
+            extra_kwargs=extra_kwargs,
+            agent_name="Planner",
+            max_retries_per_model=2,
+            base_backoff=2.0,
+            max_backoff=10.0,
+            on_model_switch=_on_switch,
+            logger=logger,
+        )
 
-                try:
-                    return json.loads(content)
-                except (json.JSONDecodeError, TypeError):
-                    return {
-                        "problem_summary": (
-                            "The AI returned a response that was not valid JSON."
-                        ),
-                        "raw_response": content[:1000],
-                    }
+        choice = response.choices[0]
+        content = strip_code_fences(
+            choice.message.content or ""
+        )
 
-            except Exception as error:
-                if is_rate_limit_error(error):
-                    retry_after = extract_retry_after(error)
-                    if is_daily_limit_error(error) or (retry_after and retry_after > max_backoff):
-                        if isinstance(error, RateLimitError):
-                            raise
-                        raise RateLimitError(
-                            message=f"Planner rate limit exceeded: {sanitize_secret(str(error))}",
-                            response=getattr(error, "response", None),
-                            body=getattr(error, "body", None),
-                        ) from error
-
-                    if attempt < max_attempts - 1:
-                        delay = min(
-                            max((retry_after or (base_backoff * (2**attempt))) + 0.5, 1.0),
-                            max_backoff,
-                        )
-                        time.sleep(delay)
-                        continue
-                    if isinstance(error, RateLimitError):
-                        raise
-                    raise RateLimitError(
-                        message=f"Planner rate limit exceeded: {sanitize_secret(str(error))}",
-                        response=getattr(error, "response", None),
-                        body=getattr(error, "body", None),
-                    ) from error
-
-                if attempt < max_attempts - 1:
-                    time.sleep(1)
-                    continue
-
-                raise
+        try:
+            return json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            return {
+                "problem_summary": (
+                    "The AI returned a response that was not valid JSON."
+                ),
+                "raw_response": content[:1000],
+            }

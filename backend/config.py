@@ -11,7 +11,7 @@ class Settings:
     def __init__(self):
         self.reload(override=False)
 
-    def reload(self, override: bool = False):
+    def reload(self, override: bool = True):
         if ENV_PATH.exists():
             load_dotenv(dotenv_path=ENV_PATH, override=override)
         default_proposal_db = Path(__file__).resolve().parent / "data" / "proposals.sqlite3"

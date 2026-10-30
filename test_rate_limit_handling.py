@@ -264,3 +264,220 @@ def test_startup_logging_clean(caplog):
     assert "gsk_" not in log_text
     assert "ghp_" not in log_text
     assert "APPROVAL_AUTH_TOKENS" not in log_text
+
+
+# 12. Regression Test: Primary Model Retries with Backoff on Temporary 429
+def test_rate_limit_primary_recovers_after_retry():
+    from backend.agents.coder import CoderAgent
+
+    coder = CoderAgent.__new__(CoderAgent)
+    coder._model = "openai/gpt-oss-120b"
+    coder._fallback_model = "openai/gpt-oss-20b"
+    coder.on_fallback = None
+    coder.client = MagicMock()
+
+    choice = MagicMock()
+    choice.message.content = "def add(a, b):\n    return a + b\n"
+    choice.finish_reason = "stop"
+    valid_resp = MagicMock(choices=[choice])
+
+    rate_limit = _make_rate_limit_error(
+        message="TPM rate limit. Please try again in 2.0s.",
+        headers={"retry-after": "2.0"},
+    )
+
+    coder.client.chat.completions.create.side_effect = [
+        rate_limit,
+        valid_resp,
+    ]
+
+    with patch("backend.agents.coder.time.sleep") as mock_sleep:
+        code = coder._generate("Implement add function")
+
+    assert "def add" in code
+    assert coder.client.chat.completions.create.call_count == 2
+    mock_sleep.assert_called_once_with(2.5)  # 2.0 + 0.5 buffer
+
+
+# 13. Regression Test: Rate Limit Automatically Switches to Fallback Model and Succeeds
+def test_rate_limit_switches_to_fallback_model_and_succeeds():
+    from backend.agents.coder import CoderAgent
+
+    coder = CoderAgent.__new__(CoderAgent)
+    coder._model = "openai/gpt-oss-120b"
+    coder._fallback_model = "openai/gpt-oss-20b"
+    coder.client = MagicMock()
+
+    fallback_events = []
+    coder.on_fallback = lambda from_m, to_m, reason: fallback_events.append((from_m, to_m, reason))
+
+    daily_err = _make_rate_limit_error(
+        message="Rate limit reached for model openai/gpt-oss-120b on tokens per day (TPD: 200,000)"
+    )
+
+    choice = MagicMock()
+    choice.message.content = "def multiply(a, b):\n    return a * b\n"
+    choice.finish_reason = "stop"
+    valid_resp = MagicMock(choices=[choice])
+
+    def mock_create(model, **kwargs):
+        if model == "openai/gpt-oss-120b":
+            raise daily_err
+        return valid_resp
+
+    coder.client.chat.completions.create.side_effect = mock_create
+
+    with patch("backend.agents.coder.time.sleep"):
+        code = coder._generate("Implement multiply function")
+
+    assert "def multiply" in code
+    assert len(fallback_events) == 1
+    assert fallback_events[0][0] == "openai/gpt-oss-120b"
+    assert fallback_events[0][1] == "openai/gpt-oss-20b"
+    assert "daily_quota" in fallback_events[0][2]
+    assert coder.model == "openai/gpt-oss-20b"
+
+
+# 14. Regression Test: Rate Limit Fallback Failure (Both Primary and Fallback Models 429)
+def test_rate_limit_fallback_also_fails():
+    from backend.agents.coder import CoderAgent
+
+    coder = CoderAgent.__new__(CoderAgent)
+    coder._model = "openai/gpt-oss-120b"
+    coder._fallback_model = "openai/gpt-oss-20b"
+    coder.on_fallback = None
+    coder.client = MagicMock()
+
+    primary_err = _make_rate_limit_error("Daily quota exceeded on 120b")
+    fallback_err = _make_rate_limit_error("Daily quota exceeded on 20b")
+
+    def mock_create(model, **kwargs):
+        if model == "openai/gpt-oss-120b":
+            raise primary_err
+        raise fallback_err
+
+    coder.client.chat.completions.create.side_effect = mock_create
+
+    with patch("backend.agents.coder.time.sleep"):
+        with pytest.raises(RateLimitError):
+            coder._generate("Implement divide function")
+
+
+# 15. Regression Test: Rate Limit Exhausted Without Fallback Model
+def test_rate_limit_exhausted_retries_without_fallback():
+    from backend.agents.coder import CoderAgent
+
+    coder = CoderAgent.__new__(CoderAgent)
+    coder._model = "openai/gpt-oss-120b"
+    coder._fallback_model = None
+    coder.on_fallback = None
+    coder.client = MagicMock()
+
+    rl_err = _make_rate_limit_error("TPM limit reached without fallback")
+    coder.client.chat.completions.create.side_effect = rl_err
+
+    with patch("backend.agents.coder.time.sleep") as mock_sleep:
+        with pytest.raises(RateLimitError):
+            coder._generate("Implement power function")
+
+    assert coder.client.chat.completions.create.call_count == 3
+    assert mock_sleep.call_count == 2
+
+
+# 16. Regression Test: Planner Switches to Fallback Model on Rate Limit
+def test_planner_switches_to_fallback_on_rate_limit():
+    from backend.agents.planner import PlannerAgent
+
+    planner = PlannerAgent.__new__(PlannerAgent)
+    planner._model = "openai/gpt-oss-120b"
+    planner._fallback_model = "openai/gpt-oss-20b"
+    planner.client = MagicMock()
+
+    fallback_events = []
+    planner.on_fallback = lambda from_m, to_m, reason: fallback_events.append((from_m, to_m, reason))
+
+    daily_err = _make_rate_limit_error("Tokens per day quota exhausted for 120b")
+    plan_json = '{"summary": "Fallback plan", "architecture_guidance": "Clean architecture", "target_files": [], "acceptance_criteria": ["Works"]}'
+
+    choice = MagicMock()
+    choice.message.content = plan_json
+    choice.finish_reason = "stop"
+    valid_resp = MagicMock(choices=[choice])
+
+    def mock_create(model, **kwargs):
+        if model == "openai/gpt-oss-120b":
+            raise daily_err
+        return valid_resp
+
+    planner.client.chat.completions.create.side_effect = mock_create
+
+    with patch("backend.agents.planner.time.sleep"):
+        plan = planner.create_plan(title="Test Feature", description="Implement test feature")
+
+    assert plan["summary"] == "Fallback plan"
+    assert len(fallback_events) == 1
+    assert planner.model == "openai/gpt-oss-20b"
+
+
+# 17. Regression Test: Full Workflow Continues Successfully with Fallback Model
+@pytest.mark.asyncio
+async def test_workflow_continues_using_fallback_model(monkeypatch):
+    from backend.main import execute_agent_workflow_internal, planner_agent, coder_agent, reviewer_agent, tester_agent
+    from backend.schemas import IssueRequest
+
+    # Mock issue and repo services
+    async def mock_get_issue(repo, issue_number):
+        return {"title": "Implement helper", "body": "Write a pure python helper."}
+
+    async def mock_get_repo(repo):
+        return {"default_branch": "main"}
+
+    async def mock_get_branch_sha(repo, branch):
+        return "1111222233334444555566667777888899990000"
+
+    async def mock_get_tree(repo, branch):
+        return ["backend/helper.py"]
+
+    monkeypatch.setattr("backend.main.issue_service.get_issue", mock_get_issue)
+    monkeypatch.setattr("backend.main.repository_service.get_repository", mock_get_repo)
+    monkeypatch.setattr("backend.main.repository_service.get_branch_sha", mock_get_branch_sha)
+    monkeypatch.setattr("backend.main.repository_service.get_tree", mock_get_tree)
+
+    # In planner, trigger fallback callback to simulate rate limit on primary model
+    def mock_create_plan(*args, **kwargs):
+        if planner_agent.on_fallback:
+            planner_agent.on_fallback("openai/gpt-oss-120b", "openai/gpt-oss-20b", "daily_quota_exhausted")
+        return {
+            "summary": "Plan generated with fallback model",
+            "architecture_guidance": "Standard design",
+            "target_files": [{"path": "backend/helper.py", "operation": "create", "rationale": "new helper"}],
+            "acceptance_criteria": ["Returns valid result"],
+        }
+
+    monkeypatch.setattr(planner_agent, "create_plan", mock_create_plan)
+    monkeypatch.setattr(coder_agent, "generate_code", lambda *a, **kw: "def helper_fn():\n    return 'success'\n")
+    monkeypatch.setattr(reviewer_agent, "review_code", lambda *a, **kw: "VERDICT: APPROVE\nLooks great.")
+    monkeypatch.setattr(tester_agent, "generate_tests", lambda *a, **kw: "from candidate import helper_fn\ndef test_fn(): assert helper_fn() == 'success'")
+
+    monkeypatch.setattr(
+        "backend.main.generated_test_runner.run_generated_tests",
+        lambda *a, **kw: {
+            "passed": True,
+            "status": "PASSED",
+            "summary": "1 passed in 0.05s",
+            "return_code": 0,
+            "stdout": "1 passed",
+            "stderr": "",
+            "failed_tests": [],
+        },
+    )
+
+    request = IssueRequest(repo="om-3531/DevSquad", issue_number=1, target_path="backend/helper.py")
+    result = await execute_agent_workflow_internal(request)
+
+    assert result["status"] == "success"
+    assert result["fallback_triggered"] is True
+    assert result["model_used"] == "openai/gpt-oss-20b"
+    assert "daily_quota" in result["fallback_reason"]
+    assert result["quality_gate"]["approved"] is True
+
